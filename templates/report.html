@@ -8,43 +8,54 @@
 </head>
 <body>
   <main class="container">
+    <header class="topbar">
+      <div class="brand">
+        <img src="/static/durably-logo-kleur-RGB.svg" alt="Durably" class="logo">
+        <span class="badge">GreenCheck Beta</span>
+      </div>
+    </header>
 
-    <div class="brand">
-      <img src="/static/durably-logo-kleur-RGB.svg" alt="Durably" class="logo">
-      <span class="badge">GreenCheck Beta</span>
-    </div>
-
-    <div class="card">
+    <section class="card">
       <h1>Scanrapport</h1>
-      <div><strong>URL:</strong> {{ input_url }}</div>
-      <div><strong>Pagina’s gescand:</strong> {{ pages_scanned }}</div>
-      <div><strong>Risicoscore:</strong> {{ risk_score }}/100</div>
-    </div>
+      <div class="meta">
+        <div><strong>URL</strong><div class="muted">{{ input_url }}</div></div>
+        <div><strong>Pagina’s</strong><div class="muted">{{ pages_scanned }}</div></div>
+        <div><strong>Risicoscore</strong><div class="score">{{ risk_score }}/100</div></div>
+      </div>
+      <p class="muted">
+        Hoger = meer potentiële red flags (indicatief). Niet alle bevindingen zijn automatisch “niet-compliant”.
+      </p>
+    </section>
 
-    <div class="card">
-      <h2>Bevindingen</h2>
+    <section class="card">
+      <h2>Top bevindingen</h2>
 
       {% if findings|length == 0 %}
-        <p>Geen red flags gevonden.</p>
+        <p>Geen red flags gevonden door de huidige beta-regels.</p>
       {% endif %}
 
       {% for f in findings %}
-        <div class="finding">
-          <strong>{{ f.category }} — {{ f.severity }}</strong>
-          <div><strong>Pagina:</strong> {{ f.url }}</div>
-          <div>{{ f.message }}</div>
+        <div class="finding {{ f.severity }}">
+          <div class="finding-head">
+            <span class="pill">{{ f.category }}</span>
+            <span class="pill sev">{{ f.severity }}</span>
+          </div>
+          <div class="muted"><strong>Pagina:</strong> <a href="{{ f.url }}" target="_blank" rel="noreferrer">{{ f.url }}</a></div>
+          <div><strong>{{ f.message }}</strong></div>
+          {% if f.how_to_fix %}
+            <div class="muted"><strong>Check:</strong> {{ f.how_to_fix }}</div>
+          {% endif %}
           <pre>{{ f.evidence }}</pre>
         </div>
       {% endfor %}
-    </div>
+    </section>
 
-    <div class="card">
+    <section class="card">
       <p class="disclaimer">
-        Deze scan is indicatief en vormt geen juridisch advies.
+        Disclaimer: Deze scan is indicatief en vormt geen juridisch advies.
       </p>
-      <a href="/">← Nieuwe scan</a>
-    </div>
-
+      <a class="link" href="/">← Nieuwe scan</a>
+    </section>
   </main>
 </body>
 </html>
