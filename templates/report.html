@@ -1,1 +1,50 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="/static/style.css" />
+  <title>Durably GreenCheck — Rapport</title>
+</head>
+<body>
+  <main class="container">
 
+    <div class="brand">
+      <img src="/static/durably-logo-kleur-RGB.svg" alt="Durably" class="logo">
+      <span class="badge">GreenCheck Beta</span>
+    </div>
+
+    <div class="card">
+      <h1>Scanrapport</h1>
+      <div><strong>URL:</strong> {{ input_url }}</div>
+      <div><strong>Pagina’s gescand:</strong> {{ pages_scanned }}</div>
+      <div><strong>Risicoscore:</strong> {{ risk_score }}/100</div>
+    </div>
+
+    <div class="card">
+      <h2>Bevindingen</h2>
+
+      {% if findings|length == 0 %}
+        <p>Geen red flags gevonden.</p>
+      {% endif %}
+
+      {% for f in findings %}
+        <div class="finding">
+          <strong>{{ f.category }} — {{ f.severity }}</strong>
+          <div><strong>Pagina:</strong> {{ f.url }}</div>
+          <div>{{ f.message }}</div>
+          <pre>{{ f.evidence }}</pre>
+        </div>
+      {% endfor %}
+    </div>
+
+    <div class="card">
+      <p class="disclaimer">
+        Deze scan is indicatief en vormt geen juridisch advies.
+      </p>
+      <a href="/">← Nieuwe scan</a>
+    </div>
+
+  </main>
+</body>
+</html>
