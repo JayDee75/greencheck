@@ -1,4 +1,50 @@
-<div class="brand">
-  <img src="/static/durably-logo-kleur-RGB.svg" alt="Durably" class="logo">
-  <span class="badge">GreenCheck Beta</span>
-</div>
+
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="/static/style.css" />
+  <title>Durably GreenCheck</title>
+</head>
+<body>
+  <main class="container">
+
+    <!-- Header -->
+    <div class="brand">
+      <img src="/static/durably-logo-kleur-RGB.svg" alt="Durably" class="logo">
+      <span class="badge">GreenCheck Beta</span>
+    </div>
+
+    <!-- Card -->
+    <div class="card">
+      <h1>Check je website op potentiële greenwashing-risico’s</h1>
+      <p>
+        Automatische pre-scan op publieke webpagina’s voor mogelijke EmpCo-red flags.
+        Resultaten zijn indicatief en bedoeld als startpunt voor review.
+      </p>
+
+      <form method="post" action="/scan">
+        <label>Website URL</label>
+        <input name="url" placeholder="https://www.voorbeeld.be" required />
+        <button type="submit">Start scan</button>
+      </form>
+
+      {% if result %}
+      <div class="result">
+        <strong>Resultaat</strong>
+        <div>{{ result }}</div>
+      </div>
+      {% endif %}
+    </div>
+
+    <!-- Disclaimer -->
+    <div class="card">
+      <p class="disclaimer">
+        Deze scan is een geautomatiseerde, indicatieve analyse en vormt geen juridisch advies.
+      </p>
+    </div>
+
+  </main>
+</body>
+</html>
