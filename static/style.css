@@ -1,1 +1,145 @@
+:root{
+  --text: #1C2D56;
+  --primary: #77BDD4;
+  --bg: #F1F1F2;
+  --accent: #F26649;
 
+  --panel: #ffffff;
+  --border: #E2E6EA;
+  --muted: #5A6B8A;
+
+  --radius: 14px;
+  --shadow: 0 10px 24px rgba(28,45,86,.10);
+  --font: system-ui, -apple-system, Segoe UI, Roboto, Arial;
+}
+
+*{ box-sizing: border-box; }
+body{
+  margin:0;
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+}
+
+.container{
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 24px 16px 46px;
+}
+
+.topbar{ margin-bottom: 14px; }
+
+.brand{
+  display:flex;
+  align-items:center;
+  gap:12px;
+}
+
+.logo{
+  height: 40px;
+  width: auto;
+  display:block;
+}
+
+.badge{
+  background: var(--primary);
+  color: #fff;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: .85rem;
+}
+
+.card{
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 18px;
+  margin: 14px 0;
+}
+
+h1{ margin: 0 0 10px; font-size: 1.6rem; }
+h2{ margin: 0 0 10px; font-size: 1.15rem; }
+
+.muted{ color: var(--muted); }
+.disclaimer{ font-size: .92rem; color: var(--muted); }
+
+label{
+  display:block;
+  margin: 12px 0 6px;
+  font-weight: 800;
+}
+
+input{
+  width: 100%;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  font-size: 1rem;
+}
+
+button{
+  margin-top: 14px;
+  padding: 12px 16px;
+  border-radius: 12px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 900;
+  cursor: pointer;
+}
+button:hover{ opacity: .92; }
+
+.meta{
+  display:flex;
+  gap:18px;
+  flex-wrap: wrap;
+}
+.score{
+  color: var(--accent);
+  font-weight: 900;
+  font-size: 1.1rem;
+}
+
+.finding{
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px;
+  margin: 12px 0;
+  background: #fff;
+}
+.finding.high{ border-left: 6px solid #E24B4B; }
+.finding.medium{ border-left: 6px solid #F2A93B; }
+.finding.low{ border-left: 6px solid #44B67A; }
+
+.finding-head{
+  display:flex;
+  gap:8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.pill{
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: .85rem;
+  background: #F7F9FB;
+}
+.pill.sev{ font-weight: 900; }
+
+pre{
+  margin: 10px 0 0;
+  padding: 10px;
+  border-radius: 12px;
+  background: #F7F9FB;
+  border: 1px solid var(--border);
+  white-space: pre-wrap;
+}
+
+.link{
+  color: var(--accent);
+  font-weight: 900;
+  text-decoration: none;
+}
+.link:hover{ text-decoration: underline; }
