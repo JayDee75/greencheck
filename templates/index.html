@@ -2,24 +2,41 @@
 <html lang="nl">
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <link rel="stylesheet" href="/static/style.css" />
   <title>Durably GreenCheck</title>
 </head>
 <body>
   <main class="container">
-    <div class="brand">
-      <img src="/static/durably-logo-kleur-RGB.svg" class="logo">
-      <span class="badge">GreenCheck Beta</span>
-    </div>
+    <header class="topbar">
+      <div class="brand">
+        <img src="/static/durably-logo-kleur-RGB.svg" alt="Durably" class="logo">
+        <span class="badge">GreenCheck Beta</span>
+      </div>
+    </header>
 
-    <div class="card">
-      <h1>EmpCo website scan</h1>
-      <form method="post" action="/scan">
+    <section class="card">
+      <h1>EmpCo website scan (EU 2024/825)</h1>
+      <p class="muted">
+        Beta-scan op publieke webpagina’s binnen hetzelfde domein. Detecteert mogelijke red flags (indicatief).
+      </p>
+
+      <form method="post" action="/scan" class="form">
         <label>Website URL</label>
-        <input name="url" placeholder="https://voorbeeld.be" required>
+        <input name="url" placeholder="https://www.voorbeeld.be" required />
+
+        <label>Max pagina’s</label>
+        <input name="max_pages" type="number" min="1" max="30" value="12" />
+
         <button type="submit">Start scan</button>
       </form>
-    </div>
+    </section>
+
+    <section class="card">
+      <p class="disclaimer">
+        Disclaimer: Deze scan is indicatief en vormt geen juridisch advies.
+      </p>
+    </section>
   </main>
 </body>
 </html>
