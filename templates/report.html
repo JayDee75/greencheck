@@ -18,7 +18,7 @@
     <section class="card">
       <h1>Scanrapport</h1>
       <div class="meta">
-        <div><strong>URL</strong><div class="muted">{{ input_url }}</div></div>
+        <div><strong>URL</strong><div class="muted">{{ target_url }}</div></div>
         <div><strong>Pagina’s</strong><div class="muted">{{ pages_scanned }}</div></div>
         <div><strong>Risicoscore</strong><div class="score">{{ risk_score }}/100</div></div>
       </div>
@@ -30,24 +30,62 @@
     <section class="card">
       <h2>Top bevindingen</h2>
 
-      {% if findings|length == 0 %}
+      {% set total = (findings_high|length) + (findings_medium|length) + (findings_low|length) %}
+
+      {% if total == 0 %}
         <p>Geen red flags gevonden door de huidige beta-regels.</p>
       {% endif %}
 
-      {% for f in findings %}
-        <div class="finding {{ f.severity }}">
-          <div class="finding-head">
-            <span class="pill">{{ f.category }}</span>
-            <span class="pill sev">{{ f.severity }}</span>
+      {% if findings_high|length > 0 %}
+        <h3>High</h3>
+        {% for f in findings_high %}
+          <div class="finding high">
+            <div class="finding-head">
+              <span class="pill">{{ f.label }}</span>
+              <span class="pill sev">high</span>
+            </div>
+            <div class="muted"><strong>Pagina:</strong>
+              <a href="{{ f.page_url }}" target="_blank" rel="noreferrer">{{ f.page_url }}</a>
+            </div>
+            <div><strong>Snippet:</strong> {{ f.snippet }}</div>
+            <div class="muted"><strong>Notitie:</strong> {{ f.notes }}</div>
           </div>
-          <div class="muted"><strong>Pagina:</strong> <a href="{{ f.url }}" target="_blank" rel="noreferrer">{{ f.url }}</a></div>
-          <div><strong>{{ f.message }}</strong></div>
-          {% if f.how_to_fix %}
-            <div class="muted"><strong>Check:</strong> {{ f.how_to_fix }}</div>
-          {% endif %}
-          <pre>{{ f.evidence }}</pre>
-        </div>
-      {% endfor %}
+        {% endfor %}
+      {% endif %}
+
+      {% if findings_medium|length > 0 %}
+        <h3>Medium</h3>
+        {% for f in findings_medium %}
+          <div class="finding medium">
+            <div class="finding-head">
+              <span class="pill">{{ f.label }}</span>
+              <span class="pill sev">medium</span>
+            </div>
+            <div class="muted"><strong>Pagina:</strong>
+              <a href="{{ f.page_url }}" target="_blank" rel="noreferrer">{{ f.page_url }}</a>
+            </div>
+            <div><strong>Snippet:</strong> {{ f.snippet }}</div>
+            <div class="muted"><strong>Notitie:</strong> {{ f.notes }}</div>
+          </div>
+        {% endfor %}
+      {% endif %}
+
+      {% if findings_low|length > 0 %}
+        <h3>Low</h3>
+        {% for f in findings_low %}
+          <div class="finding low">
+            <div class="finding-head">
+              <span class="pill">{{ f.label }}</span>
+              <span class="pill sev">low</span>
+            </div>
+            <div class="muted"><strong>Pagina:</strong>
+              <a href="{{ f.page_url }}" target="_blank" rel="noreferrer">{{ f.page_url }}</a>
+            </div>
+            <div><strong>Snippet:</strong> {{ f.snippet }}</div>
+            <div class="muted"><strong>Notitie:</strong> {{ f.notes }}</div>
+          </div>
+        {% endfor %}
+      {% endif %}
     </section>
 
     <section class="card">
