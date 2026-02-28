@@ -319,14 +319,18 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
         max_pages_int = int(max_pages)
     except Exception:
         max_pages_int = 10
-    max_pages_int = max(1, min(50, max_pages_int))
+
+    max_pages_int = max(1, min(50, max_pages_int))  # safety cap
 
     if not target:
         return RedirectResponse(url="/", status_code=303)
 
     pages_scanned, findings = scan_site(target, max_pages=max_pages_int)
-    risk = calc_risk_score(findings)
 
+    # ✅ safety: als er geen findings zijn, kan score nooit 100 zijn
+    risk = 0 if not findings else calc_risk_score(findings)
+
+    # group findings by severity
     grouped: Dict[str, List[Finding]] = {"high": [], "medium": [], "low": []}
     for f in findings:
         grouped.setdefault(f.severity, []).append(f)
@@ -335,20 +339,31 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
     grouped["medium"].sort(key=lambda x: (x.page_url, x.label))
     grouped["low"].sort(key=lambda x: (x.page_url, x.label))
 
+    # ✅ backwards compat voor templates die andere namen verwachten
+    all_findings = grouped["high"] + grouped["medium"] + grouped["low"]
+    top_findings = all_findings[:10]
+
     context = {
         "request": request,
         "target_url": target,
         "pages_scanned": pages_scanned,
         "max_pages": max_pages_int,
         "risk_score": risk,
-        "findings_total": len(findings),
+
+        # nieuwe keys (jouw huidige setup)
+        "findings_total": len(all_findings),
         "findings_high": grouped["high"],
         "findings_medium": grouped["medium"],
         "findings_low": grouped["low"],
+
+        # oude/alternatieve keys (voor report.html compatibiliteit)
+        "findings": all_findings,
+        "top_findings": top_findings,
+
         "disclaimer": "Deze scan is indicatief en vormt geen juridisch advies.",
     }
-    return templates.TemplateResponse("report.html", context)
 
+    return templates.TemplateResponse("report.html", context)
 
 @app.get("/health")
 async def health():
