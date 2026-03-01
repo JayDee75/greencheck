@@ -143,3 +143,73 @@ pre{
   text-decoration: none;
 }
 .link:hover{ text-decoration: underline; }
+
+/* --- Greenguard-like report blocks --- */
+.summary-row{
+  display:flex; align-items:center; justify-content:space-between; gap:12px;
+}
+.chips{ display:flex; gap:8px; flex-wrap:wrap; }
+.chip{
+  border:1px solid #d7dde7; padding:6px 10px; border-radius:999px;
+  font-size:12px; color:#2b3a55; background:#fff;
+}
+.risk-pill{
+  padding:8px 12px; border-radius:999px; font-weight:700; font-size:12px;
+  border:1px solid transparent;
+}
+.risk-high{ background:#ffe9e9; color:#b42318; border-color:#fda29b; }
+.risk-med{ background:#fff6db; color:#8a6100; border-color:#f6d27a; }
+.risk-low{ background:#e9f9ef; color:#117a37; border-color:#86efac; }
+
+.h1{ margin:10px 0 8px; }
+.h2{ margin:0 0 12px; }
+
+.meta-grid{
+  margin-top:14px;
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:12px;
+}
+@media (max-width:900px){
+  .meta-grid{ grid-template-columns:1fr; }
+}
+.meta-item{ background:#f6f8fc; border:1px solid #e6ebf5; border-radius:14px; padding:12px; }
+.meta-k{ font-size:12px; color:#64748b; }
+.meta-v{ font-weight:600; margin-top:4px; }
+.issues-found{ margin-top:14px; display:flex; gap:10px; align-items:baseline; }
+
+.issue{
+  border:1px solid #e6ebf5; border-radius:16px;
+  padding:14px; margin:14px 0; background:#fff;
+}
+.issue-red{ border-left:6px solid #ef4444; }
+.issue-yellow{ border-left:6px solid #f59e0b; }
+
+.issue-head{ display:flex; justify-content:space-between; align-items:center; gap:12px; }
+.issue-title{ display:flex; flex-direction:column; gap:4px; }
+.issue-no{ font-size:12px; color:#64748b; }
+.issue-name{ font-size:16px; font-weight:800; color:#0f172a; }
+
+.tag{
+  font-size:12px; font-weight:800; padding:6px 10px; border-radius:999px;
+  border:1px solid transparent;
+}
+.tag-red{ background:#ffe9e9; color:#b42318; border-color:#fda29b; }
+.tag-yellow{ background:#fff6db; color:#8a6100; border-color:#f6d27a; }
+
+.issue-section{ margin-top:12px; }
+.issue-k{ font-size:12px; font-weight:800; color:#334155; margin-bottom:6px; }
+.issue-box{
+  background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px;
+  padding:10px; color:#0f172a; font-size:13px; line-height:1.45;
+}
+
+.issue-foot{
+  display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap;
+  margin-top:12px; padding-top:10px; border-top:1px solid #eef2f7;
+}
+
+.empty{
+  background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px;
+  padding:12px; color:#334155;
+}
