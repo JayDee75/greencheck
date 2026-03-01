@@ -5,6 +5,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from typing import List, Dict, Set, Tuple, Optional
+from urllib.parse import urlparse, urljoin, urldefrag
 
 import requests
 from bs4 import BeautifulSoup
@@ -13,39 +14,85 @@ from fastapi import FastAPI, Request, Form
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from urllib.parse import urlparse, urljoin
 
 
 # ---------------------------
 # App setup (branding via templates + static)
 # ---------------------------
 app = FastAPI()
-
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
 
 # ---------------------------
-# YOUR EXISTING GREEN_CLAIMS_PATTERNS (unchanged)
+# Claim patterns (focus on “risky wording”)
+# Severity model:
+#   RED    = absolute / net-zero / carbon-neutral / “100%” etc. without nearby proof
+#   YELLOW = vague “sustainable future / greener / environmentally friendly / responsible” without specifics
+#   LOW    = claim but with nearby evidence hints (report, methodology, standard, KPI, etc.)
 # ---------------------------
+
+# Evidence hints: if these appear near the claim, we downgrade to LOW
+EVIDENCE_HINTS = [
+    r"\b(gri|csrd|esrs|sasb|tcfd|tnfd|cdp)\b",
+    r"\b(sbti|science(\s|-)?based\s*targets?)\b",
+    r"\b(lca|life\s*cycle\s*assessment|levenscyclusanalyse)\b",
+    r"\b(scope\s*[123]|ghg\s*protocol|greenhouse\s*gas)\b",
+    r"\b(rapport|report|methodology|methodologie|assumptions|aannames)\b",
+    r"\b(audit|verified|verification|assurance|third(\s|-)?party|derde\s*partij|independent|extern)\b",
+    r"\b(kpi|metric|metrics|indicator|indicatoren|data|dataset|figures|cijfers)\b",
+    r"\b(iso\s*14001|iso\s*14064|iso\s*14067)\b",
+    r"\b(ecolabel|eu(\s|-)?ecolabel|fsc|pefc|b\s*corp|fairtrade)\b",
+    r"\b(certificaat|certificate|certification)\b",
+    r"\b(footprint|co2(\s|-)?footprint|carbon(\s|-)?footprint)\b",
+    r"\b(policy|beleid|governance|code\s*of\s*conduct)\b",
+    r"\b(pdf)\b",
+]
+EVIDENCE_REGEX = re.compile("|".join(EVIDENCE_HINTS), re.I)
+
+# Future/target language increases risk if no proof nearby
+FUTURE_TARGET_REGEX = re.compile(
+    r"\b("
+    r"by\s*20\d{2}|tegen\s*20\d{2}|in\s*20\d{2}|"
+    r"target|doelstelling|ambitie|aim|plan|pledge|commit|commitment|"
+    r"will|we\s+will|we\s+aim|we\s+plan|"
+    r"roadmap|trajectory|pathway|"
+    r"net(\s|-)?zero(\s+by)?"
+    r")\b",
+    re.I,
+)
+
+# “Absolute” words often problematic without substantiation
+ABSOLUTE_WORDS_REGEX = re.compile(
+    r"\b(100%|zero|volledig|completely|entirely|no\s+impact|without\s+impact|impact\s*free)\b",
+    re.I,
+)
+
+# Core claim patterns (labels + regex)
+# Keep this list long and “semantic”; we want to catch wording like GreenGuard.
 GREEN_CLAIMS_PATTERNS: List[Tuple[str, re.Pattern]] = [
-    ("Eco-friendly / milieuvriendelijk", re.compile(r"\b(milieuvriendelijk|eco(\s|-)?friendly|eco(\s|-)?vriendelijk)\b", re.I)),
-    ("Duurzaam / sustainable", re.compile(r"\b(duurzaam(heid)?|sustainab(le|ility))\b", re.I)),
-    ("Groen / green", re.compile(r"\b(groen(e)?|green)\b", re.I)),
-    ("Planet friendly", re.compile(r"\bplanet(\s|-)?friendly\b", re.I)),
-    ("Environmentally friendly", re.compile(r"\benvironmentally(\s|-)?friendly\b", re.I)),
+    # Very common vague green marketing
+    ("Vage milieukwalificatie (eco/green)", re.compile(r"\b(milieuvriendelijk|eco(\s|-)?friendly|eco(\s|-)?vriendelijk|green(er)?|groen(e)?)\b", re.I)),
+    ("Duurzaam / sustainability claim", re.compile(r"\b(duurzaam(heid)?|sustainab(le|ility)|sustainable\s+future|future\s+.*sustainab)\b", re.I)),
+    ("Environment(ally) friendly claim", re.compile(r"\b(environmentally(\s|-)?friendly|planet(\s|-)?friendly|good\s+for\s+the\s+planet|better\s+for\s+the\s+planet)\b", re.I)),
+    ("Responsible/ethical claim", re.compile(r"\b(responsible|verantwoord|ethical|ethisch|responsible\s+sourcing|duurzame\s+inkoop)\b", re.I)),
+    ("ESG framing (marketing)", re.compile(r"\b(esg|environment(al)?\s*,?\s*social\s*(and|&)\s*governance)\b", re.I)),
 
+    # Carbon/climate (high-risk)
     ("CO2-neutraal / carbon neutral", re.compile(r"\b(co2(\s|-)?neutraal|carbon(\s|-)?neutral|klimaat(\s|-)?neutraal|climate(\s|-)?neutral)\b", re.I)),
-    ("Net zero", re.compile(r"\bnet(\s|-)?zero\b", re.I)),
+    ("Net zero claim/target", re.compile(r"\bnet(\s|-)?zero\b", re.I)),
     ("Emissievrij / zero emissions", re.compile(r"\b(emissie(\s|-)?vrij|zero(\s|-)?emissions?)\b", re.I)),
-    ("Low carbon / lage uitstoot", re.compile(r"\b(low(\s|-)?carbon|lage(\s|-)?uitstoot|reduced(\s|-)?emissions?)\b", re.I)),
-    ("CO2-compensatie / offsetting", re.compile(r"\b(compensat(ie|ies)|offset(s|ting)?|carbon(\s|-)?offset)\b", re.I)),
+    ("Low carbon / reduced emissions", re.compile(r"\b(low(\s|-)?carbon|lage(\s|-)?uitstoot|reduced(\s|-)?emissions?|reduction\s+in\s+emissions?)\b", re.I)),
+    ("CO2 compensatie / offsetting", re.compile(r"\b(compensat(ie|ies)|offset(s|ting)?|carbon(\s|-)?offset|climate(\s|-)?compensation)\b", re.I)),
+    ("Climate positive", re.compile(r"\bclimate(\s|-)?positive\b", re.I)),
 
-    ("100% hernieuwbaar / 100% renewable", re.compile(r"\b(100%\s*(hernieuwbaar|renewable)|volledig\s*(hernieuwbaar|renewable))\b", re.I)),
+    # Energy
+    ("100% hernieuwbaar / 100% renewable", re.compile(r"\b(100%\s*(hernieuwbaar|renewable)|volledig\s*(hernieuwbaar|renewable)|powered\s+by\s+100%\s+renewable)\b", re.I)),
     ("Groene energie / green energy", re.compile(r"\b(groene(\s|-)?energie|green(\s|-)?energy)\b", re.I)),
     ("Energieneutraal", re.compile(r"\b(energie(\s|-)?neutraal|energy(\s|-)?neutral)\b", re.I)),
     ("Energiezuinig / energy efficient", re.compile(r"\b(energie(\s|-)?zuinig|energy(\s|-)?efficient|energy(\s|-)?saving)\b", re.I)),
 
+    # Circularity / waste
     ("Recycleerbaar / recyclable", re.compile(r"\b(recycle(er)?baar|recyclable)\b", re.I)),
     ("Gerecycled / recycled content", re.compile(r"\b(gerecycl(ed|de)?|recycled(\s|-)?content)\b", re.I)),
     ("Plasticvrij / plastic free", re.compile(r"\b(plastic(\s|-)?vrij|plastic(\s|-)?free)\b", re.I)),
@@ -53,65 +100,32 @@ GREEN_CLAIMS_PATTERNS: List[Tuple[str, re.Pattern]] = [
     ("Circulair / circular", re.compile(r"\b(circulair|circular(ity)?)\b", re.I)),
     ("Biologisch afbreekbaar / biodegradable", re.compile(r"\b(biologisch(\s|-)?afbreekbaar|biodegradab(le|ility))\b", re.I)),
     ("Composteerbaar / compostable", re.compile(r"\b(composteerbaar|compostable)\b", re.I)),
+    ("Regenerative", re.compile(r"\b(regeneratief|regenerative)\b", re.I)),
 
-    ("Natuurvriendelijk / nature positive", re.compile(r"\b(natuurvriendelijk|nature(\s|-)?positive)\b", re.I)),
-    ("Biodiversiteit", re.compile(r"\b(biodiversiteit|biodiversity)\b", re.I)),
+    # Nature / biodiversity
+    ("Nature positive / natuurpositief", re.compile(r"\b(natuurvriendelijk|nature(\s|-)?positive|biodiversity|biodiversiteit)\b", re.I)),
     ("Ontbossingsvrij / deforestation-free", re.compile(r"\b(ontbossings(\s|-)?vrij|deforestation(\s|-)?free)\b", re.I)),
 
+    # Chemicals/materials
     ("Niet-toxisch / non-toxic", re.compile(r"\b(niet(\s|-)?toxisch|non(\s|-)?toxic)\b", re.I)),
     ("Vrij van schadelijke stoffen", re.compile(r"\b(vrij(\s|-)?van(\s|-)?schadelijke(\s|-)?stoffen|free(\s|-)?from(\s|-)?harmful(\s|-)?chemicals?)\b", re.I)),
     ("PFAS-vrij", re.compile(r"\bpfas(\s|-)?vrij\b", re.I)),
 
-    ("Gecertificeerd / certified", re.compile(r"\b(gecertificeerd|certified|certification)\b", re.I)),
-    ("ISO 14001", re.compile(r"\biso(\s|-)?14001\b", re.I)),
-    ("B Corp / B-Corp", re.compile(r"\b(b(\s|-)?corp)\b", re.I)),
-    ("FSC", re.compile(r"\bfsc\b", re.I)),
-    ("PEFC", re.compile(r"\bpefc\b", re.I)),
+    # Certifications/labels often misused if not precise
+    ("Gecertificeerd / certified (algemeen)", re.compile(r"\b(gecertificeerd|certified|certification)\b", re.I)),
     ("EU Ecolabel", re.compile(r"\b(eu(\s|-)?ecolabel|european(\s|-)?ecolabel)\b", re.I)),
-    ("Fairtrade", re.compile(r"\bfair(\s|-)?trade\b", re.I)),
+    ("FSC/PEFC/Fairtrade/B Corp", re.compile(r"\b(fsc|pefc|fair(\s|-)?trade|b(\s|-)?corp)\b", re.I)),
 ]
-
-
-# ---------------------------
-# B: Additional “EmpCo-style” detection
-# ---------------------------
-VAGUE_CLAIM_PATTERNS: List[Tuple[str, re.Pattern]] = [
-    ("Vage claim: commitment/ambitie", re.compile(r"\b(committed|commitment|ambition|we aim|we strive|we work towards|dedicated|our goal|doelstelling|streven|ambitie)\b", re.I)),
-    ("Vage claim: verantwoordelijk/responsible", re.compile(r"\b(responsible|verantwoord|conscious|bewust|respect for (the )?environment)\b", re.I)),
-]
-
-TARGET_PATTERNS: List[Tuple[str, re.Pattern]] = [
-    ("Target / deadline claim", re.compile(r"\b(by|tegen)\s*20\d{2}\b", re.I)),
-    ("Emissiereductie target", re.compile(r"\b(reduce|reduction|reduceer|verminder)\b.*\b(emissions?|emissies?|greenhouse gas|ghg|broeikasgas)\b", re.I)),
-    ("Percentage reductie", re.compile(r"\b\d{1,3}\s*%\b.*\b(reduce|reduction|minder|lower)\b", re.I)),
-]
-
-COMPARATIVE_PATTERNS: List[Tuple[str, re.Pattern]] = [
-    ("Vergelijkende claim", re.compile(r"\b(\d{1,3}\s*%)\s*(less|lower|minder)\b|\b(greener|greenest|most sustainable|duurzaamste|better for the environment|beter voor het milieu)\b", re.I)),
-]
-
-# Page-level evidence hints (stronger than sentence-level)
-EVIDENCE_HINTS = [
-    r"\b(lca|life\s*cycle\s*assessment|levenscyclusanalyse)\b",
-    r"\b(scope\s*[123]|ghg\s*protocol|greenhouse\s*gas|broeikasgas)\b",
-    r"\b(rapport|report|methodology|methodologie|assumptions|aannames)\b",
-    r"\b(audit|verified|assurance|third(\s|-)?party|derde\s*partij)\b",
-    r"\b(iso\s*14001|iso\s*14064|iso\s*14067)\b",
-    r"\b(ecolabel|fsc|pefc|b\s*corp|fairtrade|ecovadis)\b",
-    r"\b(certificaat|certificate|certification)\b",
-    r"\b(data|dataset|figures|metrics|kpi|indicator)\b",
-    r"\b(download|pdf)\b",
-]
-EVIDENCE_REGEX = re.compile("|".join(EVIDENCE_HINTS), re.I)
 
 
 @dataclass
 class Finding:
-    label: str
-    page_url: str
-    snippet: str
-    severity: str  # low / medium / high
-    notes: str
+    category: str
+    severity: str  # "red" | "yellow" | "low"
+    url: str
+    message: str
+    how_to_fix: str
+    evidence: str
 
 
 # ---------------------------
@@ -133,17 +147,28 @@ def same_domain(a: str, b: str) -> bool:
         return False
 
 
-def fetch_html(url: str, session: requests.Session, timeout: int = 15) -> Optional[str]:
+def canonicalize_url(u: str) -> str:
+    # remove fragment and trim
+    u = (u or "").strip()
+    if not u:
+        return u
+    u, _frag = urldefrag(u)
+    return u
+
+
+def fetch_html(url: str, session: requests.Session, timeout: int = 20) -> Optional[str]:
     headers = {
-        "User-Agent": "GreenCheckBot/2.0 (+https://durably.eu) requests",
+        "User-Agent": "DurablyGreenCheck/1.2 (+https://durably.eu) requests",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9,nl;q=0.8",
     }
     try:
         r = session.get(url, headers=headers, timeout=timeout, allow_redirects=True)
         if r.status_code >= 400:
             return None
         ct = (r.headers.get("content-type") or "").lower()
-        if "text/html" not in ct and "application/xhtml" not in ct:
+        # allow html + sometimes mislabelled responses
+        if ("text/html" not in ct) and ("application/xhtml" not in ct) and ("text/plain" not in ct):
             return None
         return r.text
     except Exception:
@@ -152,91 +177,96 @@ def fetch_html(url: str, session: requests.Session, timeout: int = 15) -> Option
 
 def extract_links(base_url: str, html: str) -> List[str]:
     soup = BeautifulSoup(html, "html.parser")
-    links = []
+    links: List[str] = []
     for a in soup.find_all("a", href=True):
         href = (a.get("href") or "").strip()
         if not href:
             continue
         if href.startswith("#") or href.startswith("mailto:") or href.startswith("tel:") or href.startswith("javascript:"):
             continue
-        absolute = urljoin(base_url, href).split("#")[0]
+        absolute = urljoin(base_url, href)
+        absolute = canonicalize_url(absolute)
         links.append(absolute)
     return links
 
 
-def extract_all_text(html: str) -> str:
+def extract_text_blocks(html: str) -> List[str]:
     """
-    Extract more than just visible body text:
-    - visible text
-    - meta description/og:description
-    - titles, alt text
-    This improves recall vs strict sentence splitting.
+    Extract meaningful “blocks” (headings, paragraphs, list items, title/meta)
+    Much better than sentence-splitting only.
     """
     soup = BeautifulSoup(html, "html.parser")
 
-    # remove scripts/styles but KEEP text from noscript (sometimes important)
-    for tag in soup(["script", "style", "svg"]):
+    # remove non-content
+    for tag in soup(["script", "style", "noscript", "svg"]):
         tag.decompose()
 
-    chunks: List[str] = []
+    blocks: List[str] = []
 
-    # meta descriptions
-    for meta_name in ["description", "og:description", "twitter:description"]:
-        m = soup.find("meta", attrs={"name": meta_name}) or soup.find("meta", attrs={"property": meta_name})
-        if m and m.get("content"):
-            chunks.append(m["content"])
-
-    # title
+    # title + meta description
     if soup.title and soup.title.string:
-        chunks.append(soup.title.string)
+        blocks.append(soup.title.string.strip())
 
-    # alt text
-    for img in soup.find_all("img", alt=True):
-        if img.get("alt"):
-            chunks.append(img["alt"])
+    for meta in soup.find_all("meta"):
+        name = (meta.get("name") or "").lower()
+        prop = (meta.get("property") or "").lower()
+        if name in ("description", "og:description") or prop in ("og:description",):
+            content = (meta.get("content") or "").strip()
+            if content:
+                blocks.append(content)
 
-    # visible text
-    visible = soup.get_text(separator=" ")
-    visible = re.sub(r"\s+", " ", visible).strip()
-    chunks.append(visible)
+    # headings, paragraphs, li
+    for el in soup.find_all(["h1", "h2", "h3", "h4", "p", "li"]):
+        txt = " ".join(el.stripped_strings)
+        txt = re.sub(r"\s+", " ", txt).strip()
+        if txt and len(txt) >= 20:
+            blocks.append(txt)
 
-    all_text = " ".join(chunks)
-    all_text = re.sub(r"\s+", " ", all_text).strip()
-    return all_text
-
-
-def snippet_around(text: str, start: int, end: int, window: int = 140) -> str:
-    s = max(0, start - window)
-    e = min(len(text), end + window)
-    return re.sub(r"\s+", " ", text[s:e]).strip()
-
-
-def severity_for_match(label: str, page_has_evidence: bool, matched_text: str) -> Tuple[str, str]:
-    abs_claim = bool(re.search(r"\b(100%|zero|net(\s|-)?zero|co2(\s|-)?neutraal|carbon(\s|-)?neutral|emissie(\s|-)?vrij|zero(\s|-)?emissions?)\b", matched_text, re.I))
-    if page_has_evidence:
-        return "low", "Op de pagina staan signalen van onderbouwing (rapport/methodologie/certificering/data)."
-    if abs_claim:
-        return "high", "Absolute klimaat/CO₂ claim of sterke claim zonder zichtbare onderbouwing op de pagina."
-    return "medium", "Claim gedetecteerd zonder zichtbare onderbouwing op de pagina."
-
-
-def add_matches(findings: List[Finding], page_url: str, text: str, label: str, pattern: re.Pattern, page_has_evidence: bool):
-    for m in pattern.finditer(text):
-        snip = snippet_around(text, m.start(), m.end())
-        sev, notes = severity_for_match(label, page_has_evidence, snip)
-        findings.append(Finding(label=label, page_url=page_url, snippet=snip, severity=sev, notes=notes))
-
-
-def dedupe_findings(findings: List[Finding]) -> List[Finding]:
+    # dedupe while keeping order
     seen: Set[str] = set()
-    out: List[Finding] = []
-    for f in findings:
-        key = f"{f.page_url}|{f.label}|{f.severity}|{f.snippet[:120]}"
+    out: List[str] = []
+    for b in blocks:
+        key = b.lower()
         if key in seen:
             continue
         seen.add(key)
-        out.append(f)
+        out.append(b)
     return out
+
+
+def build_snippet(text: str, max_len: int = 260) -> str:
+    t = (text or "").strip()
+    if len(t) <= max_len:
+        return t
+    return t[: max_len - 1].rstrip() + "…"
+
+
+def classify_severity(category: str, block: str, neighbor_text: str) -> Tuple[str, str]:
+    """
+    Decide red/yellow/low with heuristics.
+    neighbor_text is block + nearby concatenated (context window).
+    """
+    has_evidence = bool(EVIDENCE_REGEX.search(neighbor_text))
+    has_future = bool(FUTURE_TARGET_REGEX.search(block))
+    has_absolute = bool(ABSOLUTE_WORDS_REGEX.search(block))
+
+    # “Hard” high-risk categories
+    high_risk_cat = any(k in category.lower() for k in ["net zero", "carbon", "co2", "emissie", "climate positive"])
+
+    if has_evidence:
+        return "low", "Claim met indicatie van onderbouwing (standaard/rapport/methodologie/KPI) in de nabije context."
+
+    # RED if high-risk + no evidence, or absolute/future target wording without specifics
+    if high_risk_cat and (has_future or has_absolute or True):
+        return "red", "Hoog risico: klimaat/CO2/Net Zero claim of target zonder onderbouwing in dezelfde context."
+
+    if has_future and not has_evidence:
+        return "yellow", "Let op: future target/ambitie zonder directe scope, baseline, timing of verificatie in dezelfde context."
+
+    if has_absolute and not has_evidence:
+        return "yellow", "Let op: absolute bewoordingen zonder directe onderbouwing in dezelfde context."
+
+    return "yellow", "Let op: vage duurzaamheidsclaim zonder directe onderbouwing (scope/meetmethode/bewijs) in dezelfde context."
 
 
 def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding]]:
@@ -245,67 +275,85 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding]]:
         return 0, []
 
     session = requests.Session()
+
     visited: Set[str] = set()
     queue: deque[str] = deque([start_url])
+
     findings: List[Finding] = []
 
     while queue and len(visited) < max_pages:
-        url = queue.popleft()
-        if url in visited:
+        url = canonicalize_url(queue.popleft())
+        if not url or url in visited:
             continue
         if not same_domain(start_url, url):
             continue
 
         html = fetch_html(url, session=session)
         visited.add(url)
+
         if not html:
             continue
 
-        # queue same-domain links
+        # crawl more links
         for link in extract_links(url, html):
             if link not in visited and same_domain(start_url, link):
                 queue.append(link)
 
-        text = extract_all_text(html)
-        page_has_evidence = bool(EVIDENCE_REGEX.search(text))
+        blocks = extract_text_blocks(html)
 
-        # A) Your green claim patterns
-        for label, pattern in GREEN_CLAIMS_PATTERNS:
-            add_matches(findings, url, text, label, pattern, page_has_evidence)
+        # context window: include neighbor blocks so evidence nearby counts
+        for i, block in enumerate(blocks):
+            neighbor = " ".join(
+                blocks[max(0, i - 1): min(len(blocks), i + 2)]
+            )
 
-        # B) Vague/targets/comparisons
-        for label, pattern in VAGUE_CLAIM_PATTERNS:
-            add_matches(findings, url, text, label, pattern, page_has_evidence)
+            for category, pattern in GREEN_CLAIMS_PATTERNS:
+                if pattern.search(block):
+                    severity, why = classify_severity(category, block, neighbor)
 
-        for label, pattern in TARGET_PATTERNS:
-            add_matches(findings, url, text, label, pattern, page_has_evidence)
+                    # Create “how_to_fix” guidance depending on severity/category
+                    if severity == "red":
+                        fix = "Voeg concrete onderbouwing toe: scope (wat omvat het), baseline, meetmethode (bv. GHG Protocol/LCA), periode, en onafhankelijke verificatie waar mogelijk."
+                    elif severity == "yellow":
+                        fix = "Maak de claim specifieker: definieer scope/criteria en verwijs naar rapport/KPI/methodologie. Vermijd vage termen zonder uitleg."
+                    else:
+                        fix = "Ter info: er lijkt onderbouwing in de buurt te staan. Controleer of die onderbouwing de claim echt dekt (scope, actualiteit, verificatie)."
 
-        for label, pattern in COMPARATIVE_PATTERNS:
-            add_matches(findings, url, text, label, pattern, page_has_evidence)
+                    findings.append(
+                        Finding(
+                            category=category,
+                            severity=severity,
+                            url=url,
+                            message=build_snippet(block),
+                            how_to_fix=fix,
+                            evidence=f"Context: {build_snippet(neighbor)}\nWaarom: {why}",
+                        )
+                    )
 
-        time.sleep(0.15)
+        time.sleep(0.12)
 
-    findings = dedupe_findings(findings)
-    return len(visited), findings
+    # Dedupe findings (same url + same message)
+    uniq: Dict[Tuple[str, str], Finding] = {}
+    for f in findings:
+        key = (f.url, f.message)
+        if key not in uniq:
+            uniq[key] = f
+
+    return len(visited), list(uniq.values())
 
 
 def calc_risk_score(findings: List[Finding]) -> int:
-    """
-    More realistic risk score:
-    - high findings weigh more
-    - medium moderate
-    - low minimal
-    """
-    high = sum(1 for f in findings if f.severity == "high")
-    med = sum(1 for f in findings if f.severity == "medium")
+    red = sum(1 for f in findings if f.severity == "red")
+    yellow = sum(1 for f in findings if f.severity == "yellow")
     low = sum(1 for f in findings if f.severity == "low")
 
-    score = high * 18 + med * 9 + low * 2
+    # Weighting similar to “interestingness”
+    score = red * 18 + yellow * 7 + low * 1
     return max(0, min(100, score))
 
 
 # ---------------------------
-# Routes (keep branding!)
+# Routes (branding preserved via templates)
 # ---------------------------
 @app.get("/")
 async def home(request: Request):
@@ -315,55 +363,39 @@ async def home(request: Request):
 @app.post("/scan")
 async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)):
     target = normalize_url(url)
+
     try:
         max_pages_int = int(max_pages)
     except Exception:
         max_pages_int = 10
-
-    max_pages_int = max(1, min(50, max_pages_int))  # safety cap
+    max_pages_int = max(1, min(50, max_pages_int))
 
     if not target:
         return RedirectResponse(url="/", status_code=303)
 
     pages_scanned, findings = scan_site(target, max_pages=max_pages_int)
 
-    # ✅ safety: als er geen findings zijn, kan score nooit 100 zijn
-    risk = 0 if not findings else calc_risk_score(findings)
+    # Sort: RED first, then YELLOW, then LOW
+    order = {"red": 0, "yellow": 1, "low": 2}
+    findings.sort(key=lambda f: (order.get(f.severity, 9), f.url))
 
-    # group findings by severity
-    grouped: Dict[str, List[Finding]] = {"high": [], "medium": [], "low": []}
-    for f in findings:
-        grouped.setdefault(f.severity, []).append(f)
+    # Optional: hide LOW by default (you can flip this to True if you want)
+    SHOW_LOWS = False
+    if not SHOW_LOWS:
+        findings = [f for f in findings if f.severity in ("red", "yellow")]
 
-    grouped["high"].sort(key=lambda x: (x.page_url, x.label))
-    grouped["medium"].sort(key=lambda x: (x.page_url, x.label))
-    grouped["low"].sort(key=lambda x: (x.page_url, x.label))
+    risk = calc_risk_score(findings)
 
-    # ✅ backwards compat voor templates die andere namen verwachten
-    all_findings = grouped["high"] + grouped["medium"] + grouped["low"]
-    top_findings = all_findings[:10]
-
+    # IMPORTANT: match template/report.html variables exactly
     context = {
         "request": request,
-        "target_url": target,
+        "input_url": target,
         "pages_scanned": pages_scanned,
-        "max_pages": max_pages_int,
         "risk_score": risk,
-
-        # nieuwe keys (jouw huidige setup)
-        "findings_total": len(all_findings),
-        "findings_high": grouped["high"],
-        "findings_medium": grouped["medium"],
-        "findings_low": grouped["low"],
-
-        # oude/alternatieve keys (voor report.html compatibiliteit)
-        "findings": all_findings,
-        "top_findings": top_findings,
-
-        "disclaimer": "Deze scan is indicatief en vormt geen juridisch advies.",
+        "findings": findings,
     }
-
     return templates.TemplateResponse("report.html", context)
+
 
 @app.get("/health")
 async def health():
