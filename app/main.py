@@ -55,8 +55,14 @@ TARGET_EVIDENCE = re.compile(
 # Weak words that should NOT downgrade severity by themselves
 WEAK_CONTEXT = re.compile(r"\b(report|rapport|policy|beleid|esg|sustainability\s+report)\b", re.I)
 
+r"sustainable\s+future|"
+r"sustainable\s+hr|"
+r"sustainable\s+work|"
+r"sustainable\s+growth|"
+r"future\s+for\s+(employees|customers|society)|"
 # Claim patterns -> (type_key, label, pattern)
 CLAIM_TYPES: List[Tuple[str, str, re.Pattern]] = [
+    
     # 1) FUTURE TARGETS (usually RED): reduction target with % and year and emissions context
     (
         "FUTURE_TARGET",
