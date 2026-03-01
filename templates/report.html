@@ -15,79 +15,156 @@
       </div>
     </header>
 
+    {# Risk level helper #}
+    {% set high_count = findings_high|length %}
+    {% set med_count  = findings_medium|length %}
+    {% set low_count  = findings_low|length %}
+    {% set total_issues = high_count + med_count %}
+
+    {% if high_count >= 1 %}
+      {% set risk_label = "High Risk" %}
+      {% set risk_class = "risk-high" %}
+    {% elif med_count >= 1 %}
+      {% set risk_label = "Medium Risk" %}
+      {% set risk_class = "risk-med" %}
+    {% else %}
+      {% set risk_label = "Low Risk" %}
+      {% set risk_class = "risk-low" %}
+    {% endif %}
+
+    <!-- Top summary -->
     <section class="card">
-      <h1>Scanrapport</h1>
-      <div class="meta">
-        <div><strong>URL</strong><div class="muted">{{ target_url }}</div></div>
-        <div><strong>Pagina’s</strong><div class="muted">{{ pages_scanned }}</div></div>
-        <div><strong>Risicoscore</strong><div class="score">{{ risk_score }}/100</div></div>
+      <div class="summary-row">
+        <div class="chips">
+          <span class="chip">environment, social and governance | SD Worx</span>
+        </div>
+        <div class="risk-pill {{ risk_class }}">{{ risk_label }}</div>
       </div>
+
+      <h1 class="h1">Compliance Analysis Complete</h1>
       <p class="muted">
-        Hoger = meer potentiële red flags (indicatief). Niet alle bevindingen zijn automatisch “niet-compliant”.
+        Deze scan detecteert mogelijke “green claims” en beoordeelt indicatief het risico (EU 2024/825).
+        Hoger risico = meer kans op vage/absolute claims zonder directe onderbouwing in dezelfde context.
       </p>
+
+      <div class="meta-grid">
+        <div class="meta-item">
+          <div class="meta-k">URL</div>
+          <div class="meta-v">
+            <a href="{{ target_url }}" target="_blank" rel="noreferrer">{{ target_url }}</a>
+          </div>
+        </div>
+        <div class="meta-item">
+          <div class="meta-k">Pagina’s gescand</div>
+          <div class="meta-v">{{ pages_scanned }}</div>
+        </div>
+        <div class="meta-item">
+          <div class="meta-k">Risicoscore</div>
+          <div class="meta-v score">{{ risk_score }}/100</div>
+        </div>
+      </div>
+
+      <div class="issues-found">
+        <strong>{{ total_issues }} Issues Found</strong>
+        <span class="muted">(High + Medium)</span>
+      </div>
     </section>
 
+    <!-- Issues list -->
     <section class="card">
-      <h2>Top bevindingen</h2>
+      <h2 class="h2">Issues</h2>
 
-      {% set total = (findings_high|length) + (findings_medium|length) + (findings_low|length) %}
-
-      {% if total == 0 %}
-        <p>Geen red flags gevonden door de huidige beta-regels.</p>
+      {% if total_issues == 0 %}
+        <div class="empty">
+          Geen issues gevonden door de huidige beta-regels.
+        </div>
       {% endif %}
 
-      {% if findings_high|length > 0 %}
-        <h3>High</h3>
-        {% for f in findings_high %}
-          <div class="finding high">
-            <div class="finding-head">
-              <span class="pill">{{ f.label }}</span>
-              <span class="pill sev">high</span>
+      {# High first (RED), then Medium (YELLOW) #}
+      {% set idx = 1 %}
+
+      {% for f in findings_high %}
+        <article class="issue issue-red">
+          <div class="issue-head">
+            <div class="issue-title">
+              <span class="issue-no">Issue #{{ idx }}</span>
+              <span class="issue-name">{{ f.label }}</span>
             </div>
-            <div class="muted"><strong>Pagina:</strong>
-              <a href="{{ f.page_url }}" target="_blank" rel="noreferrer">{{ f.page_url }}</a>
-            </div>
-            <div><strong>Snippet:</strong> {{ f.snippet }}</div>
-            <div class="muted"><strong>Notitie:</strong> {{ f.notes }}</div>
+            <span class="tag tag-red">RED</span>
           </div>
-        {% endfor %}
-      {% endif %}
 
-      {% if findings_medium|length > 0 %}
-        <h3>Medium</h3>
-        {% for f in findings_medium %}
-          <div class="finding medium">
-            <div class="finding-head">
-              <span class="pill">{{ f.label }}</span>
-              <span class="pill sev">medium</span>
-            </div>
-            <div class="muted"><strong>Pagina:</strong>
-              <a href="{{ f.page_url }}" target="_blank" rel="noreferrer">{{ f.page_url }}</a>
-            </div>
-            <div><strong>Snippet:</strong> {{ f.snippet }}</div>
-            <div class="muted"><strong>Notitie:</strong> {{ f.notes }}</div>
+          <div class="issue-section">
+            <div class="issue-k">Claim (gevonden tekst)</div>
+            <div class="issue-box">{{ f.snippet }}</div>
           </div>
-        {% endfor %}
-      {% endif %}
 
-      {% if findings_low|length > 0 %}
-        <h3>Low</h3>
-        {% for f in findings_low %}
-          <div class="finding low">
-            <div class="finding-head">
-              <span class="pill">{{ f.label }}</span>
-              <span class="pill sev">low</span>
+          <div class="issue-section">
+            <div class="issue-k">Rule Violation (indicatief)</div>
+            <div class="issue-box">
+              Absolute/sterke claim zonder directe onderbouwing in dezelfde context.
             </div>
-            <div class="muted"><strong>Pagina:</strong>
-              <a href="{{ f.page_url }}" target="_blank" rel="noreferrer">{{ f.page_url }}</a>
-            </div>
-            <div><strong>Snippet:</strong> {{ f.snippet }}</div>
-            <div class="muted"><strong>Notitie:</strong> {{ f.notes }}</div>
           </div>
-        {% endfor %}
-      {% endif %}
+
+          <div class="issue-section">
+            <div class="issue-k">Recommendation</div>
+            <div class="issue-box">
+              Voeg concrete onderbouwing toe op dezelfde pagina: scope, methodologie, meetperiode, bewijs (rapport/audit),
+              of verwijs expliciet naar een bron die de claim dekt.
+            </div>
+          </div>
+
+          <div class="issue-foot">
+            <span class="muted"><strong>Pagina:</strong>
+              <a href="{{ f.page_url }}" target="_blank" rel="noreferrer">{{ f.page_url }}</a>
+            </span>
+            <span class="muted">{{ f.notes }}</span>
+          </div>
+        </article>
+        {% set idx = idx + 1 %}
+      {% endfor %}
+
+      {% for f in findings_medium %}
+        <article class="issue issue-yellow">
+          <div class="issue-head">
+            <div class="issue-title">
+              <span class="issue-no">Issue #{{ idx }}</span>
+              <span class="issue-name">{{ f.label }}</span>
+            </div>
+            <span class="tag tag-yellow">YELLOW</span>
+          </div>
+
+          <div class="issue-section">
+            <div class="issue-k">Claim (gevonden tekst)</div>
+            <div class="issue-box">{{ f.snippet }}</div>
+          </div>
+
+          <div class="issue-section">
+            <div class="issue-k">Rule Violation (indicatief)</div>
+            <div class="issue-box">
+              Algemene milieuc claim zonder directe verduidelijking (wat bedoelen jullie precies + bewijs).
+            </div>
+          </div>
+
+          <div class="issue-section">
+            <div class="issue-k">Recommendation</div>
+            <div class="issue-box">
+              Maak de claim specifieker: definieer termen (bv. “duurzaam”), voeg meetbare KPI’s toe,
+              en verwijs naar concrete onderbouwing (rapport, certificaat, audit).
+            </div>
+          </div>
+
+          <div class="issue-foot">
+            <span class="muted"><strong>Pagina:</strong>
+              <a href="{{ f.page_url }}" target="_blank" rel="noreferrer">{{ f.page_url }}</a>
+            </span>
+            <span class="muted">{{ f.notes }}</span>
+          </div>
+        </article>
+        {% set idx = idx + 1 %}
+      {% endfor %}
     </section>
 
+    <!-- Footer -->
     <section class="card">
       <p class="disclaimer">
         Disclaimer: Deze scan is indicatief en vormt geen juridisch advies.
