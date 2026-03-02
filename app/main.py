@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import re
 import time
+import json
 from collections import deque
 from dataclasses import dataclass
-from typing import List, Dict, Set, Tuple, Optional
+from typing import List, Set, Tuple, Optional
 
 import requests
 from bs4 import BeautifulSoup
@@ -17,7 +18,7 @@ from urllib.parse import urlparse, urljoin
 
 
 # ---------------------------
-# App setup (branding via templates + static)
+# App setup
 # ---------------------------
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -26,11 +27,8 @@ templates = Jinja2Templates(directory="templates")
 
 # ---------------------------
 # EmpCo-focused rules (HIGH / MEDIUM)
-# Output fields MUST match templates/report.html:
-# category, url, message, how_to_fix, evidence, severity
 # ---------------------------
 
-# Strong indicators that a page contains substantiation/plan details
 PLAN_KEYWORDS = re.compile(
     r"\b("
     r"baseline\s*year|base\s*year|referentiejaar|basisjaar|"
@@ -47,13 +45,12 @@ PLAN_KEYWORDS = re.compile(
     re.I,
 )
 
-# HIGH: future-looking targets with % + year + emissions/CO2 context
 FUTURE_TARGET = re.compile(
     r"(?is)\b("
     r"reduce|cut|lower|decrease|bring\s*down|"
     r"aim\s*to|target|commit|pledge|plan\s*to|will|shall"
     r")\b.{0,140}?\b("
-    r"emissions?|greenhouse\s*gas|ghg|co2|carbon"
+    r"emissions?|greenhouse\s*gas|ghg|co2|co2e|carbon"
     r")\b.{0,160}?\b("
     r"\d{1,3}\s*(%|percent)"
     r")\b.{0,140}?\b("
@@ -61,7 +58,6 @@ FUTURE_TARGET = re.compile(
     r")\s*(20\d{2})\b"
 )
 
-# HIGH: net zero / carbon neutral / climate neutral / zero emissions
 ABSOLUTE_CLAIMS = re.compile(
     r"\b("
     r"net\s*zero|"
@@ -75,7 +71,6 @@ ABSOLUTE_CLAIMS = re.compile(
     re.I,
 )
 
-# MEDIUM: vague “environmental claim” / generic sustainability phrasing
 VAGUE_ENV_CLAIMS = re.compile(
     r"\b("
     r"sustainable\s+(future|growth|business|hr|work|workforce|strategy)|"
@@ -92,7 +87,6 @@ VAGUE_ENV_CLAIMS = re.compile(
     re.I,
 )
 
-# MEDIUM: “generic environmental claim” without clear scope/meaning
 GENERIC_ENV_FRAMING = re.compile(
     r"\b("
     r"environment(al)?\s+(ambition|ambitions|impact|impacts)|"
@@ -110,7 +104,7 @@ class Finding:
     url: str
     message: str
     evidence: str
-    severity: str  # "high" or "medium"
+    severity: str  # "high" or "medium" (optioneel "low")
     how_to_fix: str
 
 
@@ -164,12 +158,33 @@ def extract_links(base_url: str, html: str) -> List[str]:
     return links
 
 
-import json
+def _walk_json_collect_strings(obj, out: List[str], min_len: int = 20) -> None:
+    if obj is None:
+        return
+    if isinstance(obj, str):
+        s = obj.strip()
+        if len(s) >= min_len:
+            out.append(s)
+        return
+    if isinstance(obj, list):
+        for x in obj:
+            _walk_json_collect_strings(x, out, min_len=min_len)
+        return
+    if isinstance(obj, dict):
+        for v in obj.values():
+            _walk_json_collect_strings(v, out, min_len=min_len)
+        return
+
 
 def html_to_text(html: str) -> str:
+    """
+    Extract visible text + additional text from:
+    - Next.js __NEXT_DATA__ (often where real content lives)
+    - JSON-LD blocks
+    This helps a lot on modern websites where HTML is a shell.
+    """
+    # Visible text
     soup = BeautifulSoup(html, "html.parser")
-
-    # remove noisy tags
     for tag in soup(["script", "style", "noscript"]):
         tag.decompose()
 
@@ -177,37 +192,20 @@ def html_to_text(html: str) -> str:
     visible_text = re.sub(r"[ \t\r\f\v]+", " ", visible_text)
     visible_text = re.sub(r"\n{2,}", "\n", visible_text).strip()
 
-    # --- EXTRA: Try to extract text from Next.js payload if present ---
     next_texts: List[str] = []
+    ld_texts: List[str] = []
+
+    # Next.js payload
     try:
         soup2 = BeautifulSoup(html, "html.parser")
-        next_data = soup2.find("script", id="__NEXT_DATA__")
-        if next_data and next_data.string:
-            data = json.loads(next_data.string)
-
-            def walk(o):
-                if o is None:
-                    return
-                if isinstance(o, str):
-                    s = o.strip()
-                    # keep useful strings, drop tiny noise
-                    if len(s) >= 20:
-                        next_texts.append(s)
-                    return
-                if isinstance(o, list):
-                    for x in o:
-                        walk(x)
-                    return
-                if isinstance(o, dict):
-                    for v in o.values():
-                        walk(v)
-
-            walk(data)
+        node = soup2.find("script", id="__NEXT_DATA__")
+        if node and node.string:
+            data = json.loads(node.string)
+            _walk_json_collect_strings(data, next_texts, min_len=20)
     except Exception:
         pass
 
-    # --- EXTRA: JSON-LD (sometimes contains claim-like strings) ---
-    ld_texts: List[str] = []
+    # JSON-LD blocks
     try:
         soup3 = BeautifulSoup(html, "html.parser")
         for node in soup3.find_all("script", attrs={"type": "application/ld+json"}):
@@ -215,42 +213,24 @@ def html_to_text(html: str) -> str:
                 continue
             try:
                 data = json.loads(node.string)
-
-                def walk(o):
-                    if o is None:
-                        return
-                    if isinstance(o, str):
-                        s = o.strip()
-                        if len(s) >= 20:
-                            ld_texts.append(s)
-                        return
-                    if isinstance(o, list):
-                        for x in o:
-                            walk(x)
-                        return
-                    if isinstance(o, dict):
-                        for v in o.values():
-                            walk(v)
-
-                walk(data)
+                _walk_json_collect_strings(data, ld_texts, min_len=20)
             except Exception:
                 continue
     except Exception:
         pass
 
-    # Merge: if visible text is too thin, rely more on JSON-derived text
-    merged = visible_text
     extra = "\n".join(next_texts + ld_texts).strip()
+    merged = visible_text
 
-    # If the page is mostly JS shell, merged visible text can be very short
+    # If HTML is a thin shell, add more from JSON
     if len(merged) < 800 and extra:
         merged = merged + "\n" + extra
     elif extra:
-        # still add some extra context
         merged = merged + "\n" + extra[:5000]
 
     merged = re.sub(r"\n{2,}", "\n", merged).strip()
     return merged
+
 
 def make_chunks(text: str) -> List[str]:
     """
@@ -261,7 +241,6 @@ def make_chunks(text: str) -> List[str]:
     if not text:
         return []
 
-    # Normalize bullets and dashes
     t = (
         text.replace("•", "\n• ")
             .replace("·", "\n· ")
@@ -275,17 +254,14 @@ def make_chunks(text: str) -> List[str]:
         if not line:
             continue
 
-        # Split on punctuation/separators but keep short fragments too
         sub = re.split(r"(?<=[\.\!\?])\s+|;\s+|\|\s+| - ", line)
         for s in sub:
             s = s.strip()
             if not s:
                 continue
-            # keep short lines (critical for ESG targets)
             if len(s) >= 8:
                 parts.append(s)
 
-    # Sliding windows across FULL text (captures multi-line claims)
     full = re.sub(r"\s+", " ", t).strip()
     windows: List[str] = []
     step = 250
@@ -296,6 +272,7 @@ def make_chunks(text: str) -> List[str]:
             windows.append(w)
 
     return parts + windows
+
 
 def clip(s: str, n: int = 280) -> str:
     s = (s or "").strip()
@@ -309,12 +286,11 @@ def page_has_plan(text: str) -> bool:
 
 
 # ---------------------------
-# Rule evaluation (EmpCo-oriented)
+# Rule evaluation
 # ---------------------------
 def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
     issues: List[Finding] = []
     has_plan = page_has_plan(text)
-
     chunks = make_chunks(text)
 
     # 1) FUTURE TARGET (HIGH)
@@ -323,11 +299,10 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
         if not m:
             continue
 
-pct = m.group(3)
-year = m.group(6)
+        pct = m.group(3)
+        year = m.group(6)
 
         if has_plan:
-            # If the page has plan keywords somewhere, downgrade to MEDIUM
             sev = "medium"
             msg = f"Future target mentioned ({pct} by {year}) — check if plan details are concrete and verifiable."
             fix = (
@@ -403,7 +378,7 @@ year = m.group(6)
             )
         )
 
-    # 4) GENERIC ESG/ENV FRAMING (MEDIUM) — catches “ESG ambitions… reduce GHG… align with Green Deal…”
+    # 4) GENERIC ESG/ENV FRAMING (MEDIUM)
     for ch in chunks:
         if not GENERIC_ENV_FRAMING.search(ch):
             continue
@@ -452,7 +427,7 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding]]:
         if not html:
             continue
 
-        # enqueue more links
+        # Enqueue more links
         for link in extract_links(url, html):
             if link not in visited and same_domain(start_url, link):
                 queue.append(link)
@@ -462,10 +437,10 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding]]:
 
         time.sleep(0.12)
 
-    # Deduplicate identical evidence on same url/category/message
+    # Deduplicate
     uniq = {}
     for f in findings:
-        key = (f.url, f.category, f.message, f.evidence[:120])
+        key = (f.url, f.category, f.message, (f.evidence or "")[:120])
         uniq[key] = f
     findings = list(uniq.values())
 
@@ -477,17 +452,17 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding]]:
 def calc_risk_score(findings: List[Finding]) -> int:
     high = sum(1 for f in findings if f.severity == "high")
     med = sum(1 for f in findings if f.severity == "medium")
-    # heavier weighting (EmpCo focus)
     score = high * 25 + med * 10
     return max(0, min(100, score))
 
 
 # ---------------------------
-# Routes (keep branding + match your templates)
+# Routes
 # ---------------------------
 @app.get("/")
 async def home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
+
 
 @app.post("/scan")
 async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)):
@@ -503,11 +478,9 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
         return RedirectResponse(url="/", status_code=303)
 
     pages_scanned, findings_obj = scan_site(target, max_pages=max_pages_int)
-
-    # Safety: if nothing detected, risk should be 0 (not 100)
     risk = calc_risk_score(findings_obj)
 
-    # Convert to dicts (your old schema)
+    # Old schema (optional compatibility)
     findings = [
         {
             "category": f.category,
@@ -520,7 +493,7 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
         for f in findings_obj
     ]
 
-    # Convert to report.html schema
+    # report.html schema
     def to_template_finding(f: Finding) -> dict:
         label = f.category.replace("_", " ").title()
         notes = f.message
@@ -540,14 +513,14 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
     context = {
         "request": request,
 
-        # Provide BOTH, so any template version works
+        # Provide both to avoid empty URL field across template versions
         "target_url": target,
         "input_url": target,
 
         "pages_scanned": pages_scanned,
         "risk_score": risk,
 
-        # Provide BOTH schemas, so any template version works
+        # Provide both schemas
         "findings": findings,
         "findings_high": findings_high,
         "findings_medium": findings_medium,
@@ -555,6 +528,7 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
     }
 
     return templates.TemplateResponse("report.html", context)
+
 
 @app.get("/health")
 async def health():
