@@ -288,13 +288,75 @@ def page_has_plan(text: str) -> bool:
 # ---------------------------
 # Rule evaluation
 # ---------------------------
-def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
+ 
+  def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
     issues: List[Finding] = []
     has_plan = page_has_plan(text)
     chunks = make_chunks(text)
 
-    # 1) FUTURE TARGET (HIGH)
+    # Heuristics to avoid over-flagging nav/headings
+    HEADING_LIKE = re.compile(
+        r"^(our|about|esg|environment|social|governance|sustainability|ambitions?|strategy|policy|report|reports?)\b",
+        re.I,
+    )
+    CLAIM_VERB = re.compile(
+        r"\b(aim|target|commit|pledge|will|shall|plan|reduce|cut|lower|decrease|improve|support|work\s+towards)\b",
+        re.I,
+    )
+
+    def is_noise(ch: str) -> bool:
+        c = (ch or "").strip()
+        if len(c) < 35:
+            return True
+        # Pure headings / titles (no verbs)
+        if HEADING_LIKE.match(c) and not CLAIM_VERB.search(c):
+            return True
+        # Too “menu-ish”
+        if c.count(" | ") >= 2:
+            return True
+        return False
+
+    # Per-page caps (Greenguard-style: few representative issues)
+    cap = {
+        "FUTURE_TARGET": 1,
+        "ABSOLUTE_CLAIM": 1,
+        "GENERIC_ENVIRONMENTAL_CLAIM": 2,
+        "ENVIRONMENTAL_FRAMING": 2,
+    }
+    count = {k: 0 for k in cap.keys()}
+
+    # Dedup within page
+    seen: Set[Tuple[str, str]] = set()  # (category, normalized_claim)
+
+    def add_issue(category: str, severity: str, message: str, evidence: str, how_to_fix: str):
+        nonlocal issues
+        if category in cap and count[category] >= cap[category]:
+            return
+
+        ev = clip(evidence, 280)
+        norm = re.sub(r"\s+", " ", ev.lower()).strip()
+        key = (category, norm)
+        if key in seen:
+            return
+        seen.add(key)
+
+        issues.append(
+            Finding(
+                category=category,
+                url=page_url,
+                message=message,
+                evidence=ev,
+                severity=severity,
+                how_to_fix=how_to_fix,
+            )
+        )
+        if category in count:
+            count[category] += 1
+
+    # 1) FUTURE TARGET (High/Medium)
     for ch in chunks:
+        if is_noise(ch):
+            continue
         m = FUTURE_TARGET.search(ch)
         if not m:
             continue
@@ -305,100 +367,84 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
         if has_plan:
             sev = "medium"
             msg = f"Future target mentioned ({pct} by {year}) — check if plan details are concrete and verifiable."
-            fix = (
-                "Zorg dat er publiek een concreet implementatie/transition plan staat: baseline year, scope 1/2/3, "
-                "interim milestones, governance, measures, en liefst onafhankelijke verificatie."
-            )
         else:
             sev = "high"
             msg = f"Future climate/emissions target ({pct} by {year}) without clear implementation plan context."
-            fix = (
-                "Voeg naast de claim een publiek, verifieerbaar plan toe: baseline year, scope 1/2/3, interim targets, "
-                "maatregelen, governance, rapportage, en onafhankelijke verificatie/assurance."
-            )
 
-        issues.append(
-            Finding(
-                category="FUTURE_TARGET",
-                url=page_url,
-                message=msg,
-                evidence=clip(ch),
-                severity=sev,
-                how_to_fix=fix,
-            )
+        add_issue(
+            category="FUTURE_TARGET",
+            severity=sev,
+            message=msg,
+            evidence=ch,
+            how_to_fix=(
+                "Voeg baseline year, scope 1/2/3, methode/standaard, interim targets en bewijs/rapportage toe (liefst assurance)."
+            ),
         )
 
-    # 2) ABSOLUTE CLAIMS (HIGH unless plan evidence exists)
+    # 2) ABSOLUTE CLAIMS (High/Medium)
     for ch in chunks:
+        if is_noise(ch):
+            continue
         if not ABSOLUTE_CLAIMS.search(ch):
             continue
 
         if has_plan:
             sev = "medium"
             msg = "Absolute climate claim (net zero/carbon neutral/etc.) — verify scope and substantiation."
-            fix = (
-                "Maak scope expliciet (1/2/3), boundary, methode/standaard, baselines, offsets (indien gebruikt), "
-                "en toon verificatie/assurance."
-            )
         else:
             sev = "high"
             msg = "Absolute climate claim (net zero/carbon neutral/etc.) without nearby substantiation."
-            fix = (
-                "Vermijd absolute claims zonder directe onderbouwing. Voeg scope/boundary, methode, baselines, "
-                "bewijs/rapport en verificatie toe."
-            )
 
-        issues.append(
-            Finding(
-                category="ABSOLUTE_CLAIM",
-                url=page_url,
-                message=msg,
-                evidence=clip(ch),
-                severity=sev,
-                how_to_fix=fix,
-            )
+        add_issue(
+            category="ABSOLUTE_CLAIM",
+            severity=sev,
+            message=msg,
+            evidence=ch,
+            how_to_fix=(
+                "Maak scope (1/2/3), boundary, methode, baselines en offsets (indien gebruikt) expliciet + link bewijs/assurance."
+            ),
         )
 
-    # 3) VAGUE ENVIRONMENTAL CLAIMS (MEDIUM)
+    # 3) VAGUE ENVIRONMENTAL CLAIMS (Medium) — only if claim-like
     for ch in chunks:
+        if is_noise(ch):
+            continue
         if not VAGUE_ENV_CLAIMS.search(ch):
             continue
-
-        issues.append(
-            Finding(
-                category="GENERIC_ENVIRONMENTAL_CLAIM",
-                url=page_url,
-                message="Generic/vague environmental claim — may be considered too broad or unverifiable under EmpCo.",
-                evidence=clip(ch),
-                severity="medium",
-                how_to_fix=(
-                    "Vervang vage termen door specifieke, verifieerbare statements: wat exact, scope, KPI’s/metrics, "
-                    "periode, methode, en link naar bewijs (rapport/data)."
-                ),
-            )
-        )
-
-    # 4) GENERIC ESG/ENV FRAMING (MEDIUM)
-    for ch in chunks:
-        if not GENERIC_ENV_FRAMING.search(ch):
+        # require verb to avoid catching section titles
+        if not CLAIM_VERB.search(ch):
             continue
 
-        issues.append(
-            Finding(
-                category="ENVIRONMENTAL_FRAMING",
-                url=page_url,
-                message="Environmental/ESG framing detected — ensure claims are precise, scoped and substantiated.",
-                evidence=clip(ch),
-                severity="medium",
-                how_to_fix=(
-                    "Maak claims concreet: definities, scope/boundary, cijfers, methode, en directe link naar onderbouwing "
-                    "(niet enkel 'aligned with EU Green Deal')."
-                ),
-            )
+        add_issue(
+            category="GENERIC_ENVIRONMENTAL_CLAIM",
+            severity="medium",
+            message="Generic/vague environmental claim — may be considered too broad or unverifiable under EmpCo.",
+            evidence=ch,
+            how_to_fix=(
+                "Vervang vage termen door specifieke, meetbare statements: scope, KPI’s/metrics, periode, methode en bewijslink."
+            ),
+        )
+
+    # 4) GENERIC ESG/ENV FRAMING (Medium) — only if claim-like
+    for ch in chunks:
+        if is_noise(ch):
+            continue
+        if not GENERIC_ENV_FRAMING.search(ch):
+            continue
+        if not CLAIM_VERB.search(ch):
+            continue
+
+        add_issue(
+            category="ENVIRONMENTAL_FRAMING",
+            severity="medium",
+            message="Environmental/ESG framing detected — ensure claims are precise, scoped and substantiated.",
+            evidence=ch,
+            how_to_fix=(
+                "Maak claims concreet: definities, scope/boundary, cijfers, methode, en directe link naar onderbouwing."
+            ),
         )
 
     return issues
-
 
 # ---------------------------
 # Crawl + scan
