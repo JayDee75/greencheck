@@ -15,10 +15,8 @@
       </div>
     </header>
 
-    {# Risk level helper #}
     {% set high_count = findings_high|length %}
     {% set med_count  = findings_medium|length %}
-    {% set low_count  = findings_low|length %}
     {% set total_issues = high_count + med_count %}
 
     {% if high_count >= 1 %}
@@ -32,26 +30,24 @@
       {% set risk_class = "risk-low" %}
     {% endif %}
 
-    <!-- Top summary -->
+    <!-- Summary -->
     <section class="card">
       <div class="summary-row">
         <div class="chips">
-          <span class="chip">environment, social and governance | SD Worx</span>
+          <span class="chip">{{ target_url or input_url }}</span>
         </div>
         <div class="risk-pill {{ risk_class }}">{{ risk_label }}</div>
       </div>
 
       <h1 class="h1">Compliance Analysis Complete</h1>
-      <p class="muted">
-        Deze scan detecteert mogelijke “green claims” en beoordeelt indicatief het risico (EU 2024/825).
-        Hoger risico = meer kans op vage/absolute claims zonder directe onderbouwing in dezelfde context.
-      </p>
 
       <div class="meta-grid">
         <div class="meta-item">
           <div class="meta-k">URL</div>
           <div class="meta-v">
-            <a href="{{ target_url }}" target="_blank" rel="noreferrer">{{ target_url }}</a>
+            <a href="{{ target_url or input_url }}" target="_blank">
+              {{ target_url or input_url }}
+            </a>
           </div>
         </div>
         <div class="meta-item">
@@ -70,105 +66,34 @@
       </div>
     </section>
 
-    <!-- Issues list -->
+    <!-- Issues -->
     <section class="card">
       <h2 class="h2">Issues</h2>
 
       {% if total_issues == 0 %}
         <div class="empty">
-          Geen issues gevonden door de huidige beta-regels.
+          Geen issues gevonden door de huidige regels.
         </div>
       {% endif %}
 
-      {# High first (RED), then Medium (YELLOW) #}
-      {% set idx = 1 %}
-
       {% for f in findings_high %}
-        <article class="issue issue-red">
-          <div class="issue-head">
-            <div class="issue-title">
-              <span class="issue-no">Issue #{{ idx }}</span>
-              <span class="issue-name">{{ f.label }}</span>
-            </div>
-            <span class="tag tag-red">RED</span>
-          </div>
-
-          <div class="issue-section">
-            <div class="issue-k">Claim (gevonden tekst)</div>
-            <div class="issue-box">{{ f.snippet }}</div>
-          </div>
-
-          <div class="issue-section">
-            <div class="issue-k">Rule Violation (indicatief)</div>
-            <div class="issue-box">
-              Absolute/sterke claim zonder directe onderbouwing in dezelfde context.
-            </div>
-          </div>
-
-          <div class="issue-section">
-            <div class="issue-k">Recommendation</div>
-            <div class="issue-box">
-              Voeg concrete onderbouwing toe op dezelfde pagina: scope, methodologie, meetperiode, bewijs (rapport/audit),
-              of verwijs expliciet naar een bron die de claim dekt.
-            </div>
-          </div>
-
-          <div class="issue-foot">
-            <span class="muted"><strong>Pagina:</strong>
-              <a href="{{ f.page_url }}" target="_blank" rel="noreferrer">{{ f.page_url }}</a>
-            </span>
-            <span class="muted">{{ f.notes }}</span>
-          </div>
-        </article>
-        {% set idx = idx + 1 %}
+        <div class="issue issue-red">
+          <strong>HIGH:</strong> {{ f.label }}<br>
+          {{ f.snippet }}<br>
+          <small>{{ f.page_url }}</small>
+        </div>
       {% endfor %}
 
       {% for f in findings_medium %}
-        <article class="issue issue-yellow">
-          <div class="issue-head">
-            <div class="issue-title">
-              <span class="issue-no">Issue #{{ idx }}</span>
-              <span class="issue-name">{{ f.label }}</span>
-            </div>
-            <span class="tag tag-yellow">YELLOW</span>
-          </div>
-
-          <div class="issue-section">
-            <div class="issue-k">Claim (gevonden tekst)</div>
-            <div class="issue-box">{{ f.snippet }}</div>
-          </div>
-
-          <div class="issue-section">
-            <div class="issue-k">Rule Violation (indicatief)</div>
-            <div class="issue-box">
-              Algemene milieuc claim zonder directe verduidelijking (wat bedoelen jullie precies + bewijs).
-            </div>
-          </div>
-
-          <div class="issue-section">
-            <div class="issue-k">Recommendation</div>
-            <div class="issue-box">
-              Maak de claim specifieker: definieer termen (bv. “duurzaam”), voeg meetbare KPI’s toe,
-              en verwijs naar concrete onderbouwing (rapport, certificaat, audit).
-            </div>
-          </div>
-
-          <div class="issue-foot">
-            <span class="muted"><strong>Pagina:</strong>
-              <a href="{{ f.page_url }}" target="_blank" rel="noreferrer">{{ f.page_url }}</a>
-            </span>
-            <span class="muted">{{ f.notes }}</span>
-          </div>
-        </article>
-        {% set idx = idx + 1 %}
+        <div class="issue issue-yellow">
+          <strong>MEDIUM:</strong> {{ f.label }}<br>
+          {{ f.snippet }}<br>
+          <small>{{ f.page_url }}</small>
+        </div>
       {% endfor %}
     </section>
 
-    <!-- Footer -->
     <section class="card">
-      <p class="disclaimer">
-        Disclaimer: Deze scan is indicatief en vormt geen juridisch advies.
-      </p>
       <a class="link" href="/">← Nieuwe scan</a>
     </section>
   </main>
