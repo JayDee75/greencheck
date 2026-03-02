@@ -164,14 +164,93 @@ def extract_links(base_url: str, html: str) -> List[str]:
     return links
 
 
+import json
+
 def html_to_text(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
+
+    # remove noisy tags
     for tag in soup(["script", "style", "noscript"]):
         tag.decompose()
-    text = soup.get_text(separator="\n")
-    text = re.sub(r"[ \t\r\f\v]+", " ", text)
-    text = re.sub(r"\n{2,}", "\n", text)
-    return text.strip()
+
+    visible_text = soup.get_text(separator="\n")
+    visible_text = re.sub(r"[ \t\r\f\v]+", " ", visible_text)
+    visible_text = re.sub(r"\n{2,}", "\n", visible_text).strip()
+
+    # --- EXTRA: Try to extract text from Next.js payload if present ---
+    next_texts: List[str] = []
+    try:
+        soup2 = BeautifulSoup(html, "html.parser")
+        next_data = soup2.find("script", id="__NEXT_DATA__")
+        if next_data and next_data.string:
+            data = json.loads(next_data.string)
+
+            def walk(o):
+                if o is None:
+                    return
+                if isinstance(o, str):
+                    s = o.strip()
+                    # keep useful strings, drop tiny noise
+                    if len(s) >= 20:
+                        next_texts.append(s)
+                    return
+                if isinstance(o, list):
+                    for x in o:
+                        walk(x)
+                    return
+                if isinstance(o, dict):
+                    for v in o.values():
+                        walk(v)
+
+            walk(data)
+    except Exception:
+        pass
+
+    # --- EXTRA: JSON-LD (sometimes contains claim-like strings) ---
+    ld_texts: List[str] = []
+    try:
+        soup3 = BeautifulSoup(html, "html.parser")
+        for node in soup3.find_all("script", attrs={"type": "application/ld+json"}):
+            if not node.string:
+                continue
+            try:
+                data = json.loads(node.string)
+
+                def walk(o):
+                    if o is None:
+                        return
+                    if isinstance(o, str):
+                        s = o.strip()
+                        if len(s) >= 20:
+                            ld_texts.append(s)
+                        return
+                    if isinstance(o, list):
+                        for x in o:
+                            walk(x)
+                        return
+                    if isinstance(o, dict):
+                        for v in o.values():
+                            walk(v)
+
+                walk(data)
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    # Merge: if visible text is too thin, rely more on JSON-derived text
+    merged = visible_text
+    extra = "\n".join(next_texts + ld_texts).strip()
+
+    # If the page is mostly JS shell, merged visible text can be very short
+    if len(merged) < 800 and extra:
+        merged = merged + "\n" + extra
+    elif extra:
+        # still add some extra context
+        merged = merged + "\n" + extra[:5000]
+
+    merged = re.sub(r"\n{2,}", "\n", merged).strip()
+    return merged
 
 def make_chunks(text: str) -> List[str]:
     """
@@ -424,16 +503,29 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
         return RedirectResponse(url="/", status_code=303)
 
     pages_scanned, findings_obj = scan_site(target, max_pages=max_pages_int)
+
+    # Safety: if nothing detected, risk should be 0 (not 100)
     risk = calc_risk_score(findings_obj)
 
-    # report.html verwacht: findings_high / findings_medium / findings_low
-    # en per item: label, snippet, page_url, notes
+    # Convert to dicts (your old schema)
+    findings = [
+        {
+            "category": f.category,
+            "url": f.url,
+            "message": f.message,
+            "how_to_fix": f.how_to_fix,
+            "evidence": f.evidence,
+            "severity": f.severity,
+        }
+        for f in findings_obj
+    ]
+
+    # Convert to report.html schema
     def to_template_finding(f: Finding) -> dict:
         label = f.category.replace("_", " ").title()
         notes = f.message
         if f.how_to_fix:
             notes = f"{notes} | Fix: {clip(f.how_to_fix, 160)}"
-
         return {
             "label": label,
             "snippet": f.evidence,
@@ -447,17 +539,22 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
 
     context = {
         "request": request,
-        "target_url": target,  # report.html gebruikt target_url
+
+        # Provide BOTH, so any template version works
+        "target_url": target,
+        "input_url": target,
+
         "pages_scanned": pages_scanned,
         "risk_score": risk,
+
+        # Provide BOTH schemas, so any template version works
+        "findings": findings,
         "findings_high": findings_high,
         "findings_medium": findings_medium,
         "findings_low": findings_low,
     }
 
     return templates.TemplateResponse("report.html", context)
-
-
 
 @app.get("/health")
 async def health():
