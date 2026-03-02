@@ -173,41 +173,50 @@ def html_to_text(html: str) -> str:
     text = re.sub(r"\n{2,}", "\n", text)
     return text.strip()
 
-
 def make_chunks(text: str) -> List[str]:
     """
-    More robust than sentence splitting:
-    - Keep headings/bullets (often no punctuation)
-    - Split on newline, bullets, and punctuation
+    ESG-friendly chunking:
+    - keeps short bullet lines (targets are often short, e.g. "55% by 2030")
+    - creates sliding windows across full text so multi-line targets match
     """
     if not text:
         return []
 
-    # Normalize bullets
-    t = text.replace("•", "\n• ").replace("·", "\n· ").replace("–", "-").replace("—", "-")
-    # First split on newlines
-    parts = []
+    # Normalize bullets and dashes
+    t = (
+        text.replace("•", "\n• ")
+            .replace("·", "\n· ")
+            .replace("–", "-")
+            .replace("—", "-")
+    )
+
+    parts: List[str] = []
     for line in t.split("\n"):
         line = line.strip()
         if not line:
             continue
-        # Split long lines on punctuation boundaries too
+
+        # Split on punctuation/separators but keep short fragments too
         sub = re.split(r"(?<=[\.\!\?])\s+|;\s+|\|\s+| - ", line)
         for s in sub:
             s = s.strip()
-            if s and len(s) >= 25:
+            if not s:
+                continue
+            # keep short lines (critical for ESG targets)
+            if len(s) >= 8:
                 parts.append(s)
 
-    # Also add “windows” for patterns spanning multiple segments
-    joined = " ".join(parts)
-    windows = []
-    step = 350
-    win = 700
-    if len(joined) > 0:
-        for i in range(0, len(joined), step):
-            windows.append(joined[i : i + win].strip())
-    return parts + windows
+    # Sliding windows across FULL text (captures multi-line claims)
+    full = re.sub(r"\s+", " ", t).strip()
+    windows: List[str] = []
+    step = 250
+    win = 900
+    for i in range(0, len(full), step):
+        w = full[i:i + win].strip()
+        if w:
+            windows.append(w)
 
+    return parts + windows
 
 def clip(s: str, n: int = 280) -> str:
     s = (s or "").strip()
@@ -235,8 +244,8 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
         if not m:
             continue
 
-        pct = m.group(3)
-        year = m.group(5)
+pct = m.group(3)
+year = m.group(6)
 
         if has_plan:
             # If the page has plan keywords somewhere, downgrade to MEDIUM
@@ -401,7 +410,6 @@ def calc_risk_score(findings: List[Finding]) -> int:
 async def home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
-
 @app.post("/scan")
 async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)):
     target = normalize_url(url)
@@ -418,28 +426,37 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
     pages_scanned, findings_obj = scan_site(target, max_pages=max_pages_int)
     risk = calc_risk_score(findings_obj)
 
-    # Convert to dicts exactly as your report.html expects:
-    findings = [
-        {
-            "category": f.category,
-            "url": f.url,
-            "message": f.message,
-            "how_to_fix": f.how_to_fix,
-            "evidence": f.evidence,
-            "severity": f.severity,  # "high" / "medium"
+    # report.html verwacht: findings_high / findings_medium / findings_low
+    # en per item: label, snippet, page_url, notes
+    def to_template_finding(f: Finding) -> dict:
+        label = f.category.replace("_", " ").title()
+        notes = f.message
+        if f.how_to_fix:
+            notes = f"{notes} | Fix: {clip(f.how_to_fix, 160)}"
+
+        return {
+            "label": label,
+            "snippet": f.evidence,
+            "page_url": f.url,
+            "notes": notes,
         }
-        for f in findings_obj
-    ]
+
+    findings_high = [to_template_finding(f) for f in findings_obj if f.severity == "high"]
+    findings_medium = [to_template_finding(f) for f in findings_obj if f.severity == "medium"]
+    findings_low = [to_template_finding(f) for f in findings_obj if f.severity == "low"]
 
     context = {
         "request": request,
-        "input_url": target,         # <-- your template uses input_url
+        "target_url": target,  # report.html gebruikt target_url
         "pages_scanned": pages_scanned,
         "risk_score": risk,
-        "findings": findings,        # <-- your template loops findings
+        "findings_high": findings_high,
+        "findings_medium": findings_medium,
+        "findings_low": findings_low,
     }
 
     return templates.TemplateResponse("report.html", context)
+
 
 
 @app.get("/health")
