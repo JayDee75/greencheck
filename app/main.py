@@ -405,26 +405,7 @@ def page_has_plan(text: str) -> bool:
             ),
         )
 
-    # 3) VAGUE CLAIMS — ONLY if performance-related
-for ch in chunks:
-    if is_heading_like(ch):
-        continue
-
-    # must contain performance language
-    if not re.search(r"\b(reduce|cut|lower|decrease|improve|increase|achieve|deliver|become|reach|will|shall|target|commit)\b", ch, re.I):
-        continue
-
-    if not VAGUE_ENV_CLAIMS.search(ch):
-        continue
-
-    add(
-        "GENERIC_ENVIRONMENTAL_CLAIM",
-        "medium",
-        "Environmental performance claim without clear measurable substantiation.",
-        ch,
-        "Maak de claim meetbaar: voeg baseline, scope, KPI’s, meetperiode en bewijslink toe.",
-    )
-
+   
 # ---------------------------
 # Crawl + scan
 # ---------------------------
