@@ -405,46 +405,25 @@ def page_has_plan(text: str) -> bool:
             ),
         )
 
-    # 3) VAGUE ENVIRONMENTAL CLAIMS (Medium) — only if claim-like
-    for ch in chunks:
-        if is_noise(ch):
-            continue
-        if not VAGUE_ENV_CLAIMS.search(ch):
-            continue
-        # require verb to avoid catching section titles
-        if not CLAIM_VERB.search(ch):
-            continue
+    # 3) VAGUE CLAIMS — ONLY if performance-related
+for ch in chunks:
+    if is_heading_like(ch):
+        continue
 
-        add_issue(
-            category="GENERIC_ENVIRONMENTAL_CLAIM",
-            severity="medium",
-            message="Generic/vague environmental claim — may be considered too broad or unverifiable under EmpCo.",
-            evidence=ch,
-            how_to_fix=(
-                "Vervang vage termen door specifieke, meetbare statements: scope, KPI’s/metrics, periode, methode en bewijslink."
-            ),
-        )
+    # must contain performance language
+    if not re.search(r"\b(reduce|cut|lower|decrease|improve|increase|achieve|deliver|become|reach|will|shall|target|commit)\b", ch, re.I):
+        continue
 
-    # 4) GENERIC ESG/ENV FRAMING (Medium) — only if claim-like
-    for ch in chunks:
-        if is_noise(ch):
-            continue
-        if not GENERIC_ENV_FRAMING.search(ch):
-            continue
-        if not CLAIM_VERB.search(ch):
-            continue
+    if not VAGUE_ENV_CLAIMS.search(ch):
+        continue
 
-        add_issue(
-            category="ENVIRONMENTAL_FRAMING",
-            severity="medium",
-            message="Environmental/ESG framing detected — ensure claims are precise, scoped and substantiated.",
-            evidence=ch,
-            how_to_fix=(
-                "Maak claims concreet: definities, scope/boundary, cijfers, methode, en directe link naar onderbouwing."
-            ),
-        )
-
-    return issues
+    add(
+        "GENERIC_ENVIRONMENTAL_CLAIM",
+        "medium",
+        "Environmental performance claim without clear measurable substantiation.",
+        ch,
+        "Maak de claim meetbaar: voeg baseline, scope, KPI’s, meetperiode en bewijslink toe.",
+    )
 
 # ---------------------------
 # Crawl + scan
