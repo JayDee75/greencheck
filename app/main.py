@@ -109,8 +109,21 @@ def extract_links(base_url: str, html: str) -> List[str]:
             continue
         if href.startswith(("#", "mailto:", "tel:", "javascript:")):
             continue
-        links.append(urljoin(base_url, href).split("#")[0])
+        candidate = urljoin(base_url, href).split("#")[0].strip()
+        parsed = urlparse(candidate)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            continue
+        links.append(candidate)
     return links
+
+
+def is_readable_http_url(url: str) -> bool:
+    parsed = urlparse((url or "").strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False
+    if any(c.isspace() for c in url):
+        return False
+    return len(url) <= 220
 
 
 def _walk_json_collect_strings(obj, out: List[str], min_len: int = 20) -> None:
@@ -323,7 +336,8 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding]]:
 
     dedup = {}
     for finding in all_findings:
-        key = (finding.category, finding.url, finding.evidence[:120])
+        normalized_evidence = re.sub(r"\s+", " ", finding.evidence.lower()).strip()
+        key = (finding.category, normalized_evidence[:180])
         dedup[key] = finding
     findings = list(dedup.values())
 
@@ -362,10 +376,15 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
     risk = calc_risk_score(findings_obj)
 
     def to_template_finding(f: Finding) -> dict:
+        readable_source = is_readable_http_url(f.url)
         return {
             "label": f.category.replace("_", " ").title(),
             "snippet": f.evidence,
             "page_url": f.url,
+            "page_url_readable": readable_source,
+            "page_url_label": (
+                f.url if readable_source else "Bronpagina URL onleesbaar (ongeldige of incoherente link in scanresultaat)."
+            ),
             "message": f.message,
             "rule": RULEBOOK.get(f.category, "EmpCo Art. 5 — Claim moet duidelijk, juist en verifieerbaar zijn."),
             "recommendation": f.how_to_fix,
