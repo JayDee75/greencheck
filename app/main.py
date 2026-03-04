@@ -61,6 +61,12 @@ class Finding:
     how_to_fix: str
 
 
+RULEBOOK = {
+    "MATERIAL_TARGET_CLAIM": "EmpCo Art. 5/6 — Een materiële klimaatdoelclaim moet onderbouwd zijn met scope, baseline, methodologie en voortgangsinformatie.",
+    "MATERIAL_ABSOLUTE_CLAIM": "EmpCo Art. 5 — Absolute claims (bv. net zero/carbon neutral) moeten duidelijk afgebakend en verifieerbaar zijn.",
+}
+
+
 def normalize_url(u: str) -> str:
     u = (u or "").strip()
     if not u:
@@ -260,7 +266,7 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
             )
 
         if ABSOLUTE_CLAIMS.search(chunk):
-            severity = "medium" if has_substantiation else "high"
+            severity = "medium"
             offset_note = " Vermeld expliciet de rol van offsets/certificaten." if OFFSET_HINT.search(chunk) else ""
             message = (
                 "Materiële absolute claim (net zero/carbon neutral) zonder duidelijke afbakening of bewijs."
@@ -356,11 +362,15 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
     risk = calc_risk_score(findings_obj)
 
     def to_template_finding(f: Finding) -> dict:
-        label = f.category.replace("_", " ").title()
-        notes = f.message
-        if f.how_to_fix:
-            notes = f"{notes} | Fix: {clip(f.how_to_fix, 160)}"
-        return {"label": label, "snippet": f.evidence, "page_url": f.url, "notes": notes}
+        return {
+            "label": f.category.replace("_", " ").title(),
+            "snippet": f.evidence,
+            "page_url": f.url,
+            "message": f.message,
+            "rule": RULEBOOK.get(f.category, "EmpCo Art. 5 — Claim moet duidelijk, juist en verifieerbaar zijn."),
+            "recommendation": f.how_to_fix,
+            "severity": f.severity,
+        }
 
     context = {
         "request": request,
@@ -368,17 +378,7 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
         "input_url": target,
         "pages_scanned": pages_scanned,
         "risk_score": risk,
-        "findings": [
-            {
-                "category": f.category,
-                "url": f.url,
-                "message": f.message,
-                "how_to_fix": f.how_to_fix,
-                "evidence": f.evidence,
-                "severity": f.severity,
-            }
-            for f in findings_obj
-        ],
+        "findings": [to_template_finding(f) for f in findings_obj],
         "findings_high": [to_template_finding(f) for f in findings_obj if f.severity == "high"],
         "findings_medium": [to_template_finding(f) for f in findings_obj if f.severity == "medium"],
         "findings_low": [],

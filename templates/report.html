@@ -30,7 +30,6 @@
       {% set risk_class = "risk-low" %}
     {% endif %}
 
-    <!-- Summary -->
     <section class="card">
       <div class="summary-row">
         <div class="chips">
@@ -62,11 +61,10 @@
 
       <div class="issues-found">
         <strong>{{ total_issues }} Issues Found</strong>
-        <span class="muted">(High + Medium)</span>
+        <span class="muted">(High: {{ high_count }} | Medium: {{ med_count }})</span>
       </div>
     </section>
 
-    <!-- Issues -->
     <section class="card">
       <h2 class="h2">Issues</h2>
 
@@ -76,24 +74,42 @@
         </div>
       {% endif %}
 
-      {% for f in findings_high %}
-        <div class="issue issue-red">
-          <strong>Potential Breach #{{ loop.index }}</strong><br>
-          <small>Severity: high</small><br>
-          <strong>Detection:</strong> {{ f.label }}<br>
-          {{ f.snippet }}<br>
-          <small>{{ f.page_url }}</small>
-        </div>
-      {% endfor %}
+      {% for f in findings %}
+        {% set red = f.severity == "high" %}
+        <article class="issue {{ 'issue-red' if red else 'issue-yellow' }}">
+          <div class="issue-head">
+            <div class="issue-title">
+              <span class="issue-no">Issue #{{ loop.index }}</span>
+              <span class="issue-name">{{ f.label }}</span>
+            </div>
+            <span class="tag {{ 'tag-red' if red else 'tag-yellow' }}">{{ f.severity|upper }}</span>
+          </div>
 
-      {% for f in findings_medium %}
-        <div class="issue issue-yellow">
-          <strong>Potential Breach #{{ high_count + loop.index }}</strong><br>
-          <small>Severity: medium</small><br>
-          <strong>Detection:</strong> {{ f.label }}<br>
-          {{ f.snippet }}<br>
-          <small>{{ f.page_url }}</small>
-        </div>
+          <div class="issue-section">
+            <div class="issue-k">Detected sentence</div>
+            <div class="issue-box">{{ f.snippet }}</div>
+          </div>
+
+          <div class="issue-section">
+            <div class="issue-k">Rule violation</div>
+            <div class="issue-box">{{ f.rule }}</div>
+          </div>
+
+          <div class="issue-section">
+            <div class="issue-k">Why this is flagged</div>
+            <div class="issue-box">{{ f.message }}</div>
+          </div>
+
+          <div class="issue-section">
+            <div class="issue-k">Recommendation</div>
+            <div class="issue-box">{{ f.recommendation }}</div>
+          </div>
+
+          <footer class="issue-foot">
+            <small class="muted">Source page</small>
+            <small><a href="{{ f.page_url }}" target="_blank">{{ f.page_url }}</a></small>
+          </footer>
+        </article>
       {% endfor %}
     </section>
 
