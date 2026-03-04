@@ -1,101 +1,54 @@
 from __future__ import annotations
 
+import json
 import re
 import time
-import json
 from collections import deque
 from dataclasses import dataclass
-from typing import List, Set, Tuple, Optional
+from typing import List, Optional, Set, Tuple
+from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
-
-from fastapi import FastAPI, Request, Form
+from fastapi import FastAPI, Form, Request
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from urllib.parse import urlparse, urljoin
 
 
-# ---------------------------
-# App setup
-# ---------------------------
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
 
-# ---------------------------
-# EmpCo-focused rules (HIGH / MEDIUM)
-# ---------------------------
-
-PLAN_KEYWORDS = re.compile(
-    r"\b("
-    r"baseline\s*year|base\s*year|referentiejaar|basisjaar|"
-    r"scope\s*1|scope\s*2|scope\s*3|"
-    r"interim\s*target|tussen(doel|doelen)|milestone|"
-    r"roadmap|transition\s*plan|implement(ation)?\s*plan|actieplan|"
-    r"capex|opex|investment|investeringen|"
-    r"governance|verantwoordelijkheden|"
-    r"third[-\s]?party|independent|verified|assurance|audit|"
-    r"SBTi|science[-\s]?based|GHG\s*Protocol|"
-    r"methodology|methodologie|calculation|berekening|"
-    r"data|kpi|metric|indicator|rapport|report"
-    r")\b",
+CLIMATE_CONTEXT = re.compile(
+    r"\b(emissions?|ghg|greenhouse\s*gas|co2|co2e|carbon|climate|net\s*zero|decarboni[sz]ation)\b",
     re.I,
 )
 
-FUTURE_TARGET = re.compile(
-    r"(?is)\b("
-    r"reduce|cut|lower|decrease|bring\s*down|"
-    r"aim\s*to|target|commit|pledge|plan\s*to|will|shall"
-    r")\b.{0,140}?\b("
-    r"emissions?|greenhouse\s*gas|ghg|co2|co2e|carbon"
-    r")\b.{0,160}?\b("
-    r"\d{1,3}\s*(%|percent)"
-    r")\b.{0,140}?\b("
-    r"by|before|in"
-    r")\s*(20\d{2})\b"
+PLAN_SUBSTANTIATION = re.compile(
+    r"\b(baseline\s*year|base\s*year|basisjaar|referentiejaar|scope\s*1|scope\s*2|scope\s*3|"
+    r"interim\s*target|milestone|roadmap|transition\s*plan|actieplan|capex|opex|investment|"
+    r"verified|assurance|audit|methodology|methodologie|ghg\s*protocol|sbti|science[-\s]?based)\b",
+    re.I,
+)
+
+MATERIAL_TARGET = re.compile(
+    r"(?is)\b(aim\s*to|target|commit|pledge|plan\s*to|will|shall|reduce|cut|lower|decrease)\b"
+    r".{0,180}?\b(emissions?|ghg|greenhouse\s*gas|co2|co2e|carbon)\b"
+    r".{0,160}?(\d{1,3}\s*(%|percent))"
+    r".{0,140}?\b(by|before|in)\s*(20\d{2})\b"
 )
 
 ABSOLUTE_CLAIMS = re.compile(
-    r"\b("
-    r"net\s*zero|"
-    r"carbon\s*neutral|"
-    r"climate\s*neutral|"
-    r"co2\s*-?\s*neutral|co2\s*-?\s*neutraal|"
-    r"zero\s*emissions?|emissie\s*-?\s*vrij|"
-    r"fully\s*decarboni(s|z)ed|"
-    r"100%\s*(renewable|hernieuwbaar)"
-    r")\b",
+    r"\b(net\s*zero|carbon\s*neutral|climate\s*neutral|co2\s*-?\s*neutral|"
+    r"zero\s*emissions?|emissie\s*-?\s*vrij|fully\s*decarboni[sz]ed)\b",
     re.I,
 )
 
-VAGUE_ENV_CLAIMS = re.compile(
-    r"\b("
-    r"sustainable\s+(future|growth|business|hr|work|workforce|strategy)|"
-    r"to\s*(a|an)\s*sustainable\s+future|"
-    r"creating\s+a\s+better\s+future|"
-    r"better\s+for\s+the\s+planet|"
-    r"environmentally\s+friendly|eco(\s|-)?friendly|planet(\s|-)?friendly|"
-    r"green\s+future|"
-    r"responsible\s+business|"
-    r"we\s*(care|focus)\s*on\s*sustainability|"
-    r"committed\s+to\s+sustainability|"
-    r"do\s*our\s*part\s*for\s*(the\s*)?(planet|environment)"
-    r")\b",
-    re.I,
-)
+OFFSET_HINT = re.compile(r"\b(offset|compensat|certificate|credit)\b", re.I)
 
-GENERIC_ENV_FRAMING = re.compile(
-    r"\b("
-    r"environment(al)?\s+(ambition|ambitions|impact|impacts)|"
-    r"esg\s+ambitions?|"
-    r"green\s+deal|"
-    r"international\s+environmental\s+regulations?"
-    r")\b",
-    re.I,
-)
+NON_MATERIAL_URL_HINT = re.compile(r"/(news|blog|events|careers|jobs|investors?)/", re.I)
 
 
 @dataclass
@@ -104,13 +57,10 @@ class Finding:
     url: str
     message: str
     evidence: str
-    severity: str  # "high" or "medium" (optioneel "low")
+    severity: str
     how_to_fix: str
 
 
-# ---------------------------
-# Helpers
-# ---------------------------
 def normalize_url(u: str) -> str:
     u = (u or "").strip()
     if not u:
@@ -129,7 +79,7 @@ def same_domain(a: str, b: str) -> bool:
 
 def fetch_html(url: str, session: requests.Session, timeout: int = 18) -> Optional[str]:
     headers = {
-        "User-Agent": "Durably-GreenCheck/1.3 (+https://durably.eu) requests",
+        "User-Agent": "Durably-GreenCheck/2.0 (+https://durably.eu)",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     }
     try:
@@ -151,10 +101,9 @@ def extract_links(base_url: str, html: str) -> List[str]:
         href = (a.get("href") or "").strip()
         if not href:
             continue
-        if href.startswith("#") or href.startswith("mailto:") or href.startswith("tel:") or href.startswith("javascript:"):
+        if href.startswith(("#", "mailto:", "tel:", "javascript:")):
             continue
-        absolute = urljoin(base_url, href).split("#")[0]
-        links.append(absolute)
+        links.append(urljoin(base_url, href).split("#")[0])
     return links
 
 
@@ -167,23 +116,15 @@ def _walk_json_collect_strings(obj, out: List[str], min_len: int = 20) -> None:
             out.append(s)
         return
     if isinstance(obj, list):
-        for x in obj:
-            _walk_json_collect_strings(x, out, min_len=min_len)
+        for item in obj:
+            _walk_json_collect_strings(item, out, min_len=min_len)
         return
     if isinstance(obj, dict):
-        for v in obj.values():
-            _walk_json_collect_strings(v, out, min_len=min_len)
-        return
+        for value in obj.values():
+            _walk_json_collect_strings(value, out, min_len=min_len)
 
 
 def html_to_text(html: str) -> str:
-    """
-    Extract visible text + additional text from:
-    - Next.js __NEXT_DATA__ (often where real content lives)
-    - JSON-LD blocks
-    This helps a lot on modern websites where HTML is a shell.
-    """
-    # Visible text
     soup = BeautifulSoup(html, "html.parser")
     for tag in soup(["script", "style", "noscript"]):
         tag.decompose()
@@ -192,86 +133,60 @@ def html_to_text(html: str) -> str:
     visible_text = re.sub(r"[ \t\r\f\v]+", " ", visible_text)
     visible_text = re.sub(r"\n{2,}", "\n", visible_text).strip()
 
-    next_texts: List[str] = []
-    ld_texts: List[str] = []
+    extra: List[str] = []
 
-    # Next.js payload
     try:
-        soup2 = BeautifulSoup(html, "html.parser")
-        node = soup2.find("script", id="__NEXT_DATA__")
-        if node and node.string:
-            data = json.loads(node.string)
-            _walk_json_collect_strings(data, next_texts, min_len=20)
+        payload_node = BeautifulSoup(html, "html.parser").find("script", id="__NEXT_DATA__")
+        if payload_node and payload_node.string:
+            data = json.loads(payload_node.string)
+            _walk_json_collect_strings(data, extra)
     except Exception:
         pass
 
-    # JSON-LD blocks
     try:
-        soup3 = BeautifulSoup(html, "html.parser")
-        for node in soup3.find_all("script", attrs={"type": "application/ld+json"}):
+        soup_ld = BeautifulSoup(html, "html.parser")
+        for node in soup_ld.find_all("script", attrs={"type": "application/ld+json"}):
             if not node.string:
                 continue
             try:
-                data = json.loads(node.string)
-                _walk_json_collect_strings(data, ld_texts, min_len=20)
+                _walk_json_collect_strings(json.loads(node.string), extra)
             except Exception:
                 continue
     except Exception:
         pass
 
-    extra = "\n".join(next_texts + ld_texts).strip()
     merged = visible_text
+    if extra:
+        merged += "\n" + "\n".join(extra[:300])
 
-    # If HTML is a thin shell, add more from JSON
-    if len(merged) < 800 and extra:
-        merged = merged + "\n" + extra
-    elif extra:
-        merged = merged + "\n" + extra[:5000]
-
-    merged = re.sub(r"\n{2,}", "\n", merged).strip()
-    return merged
+    return re.sub(r"\n{2,}", "\n", merged).strip()
 
 
 def make_chunks(text: str) -> List[str]:
-    """
-    ESG-friendly chunking:
-    - keeps short bullet lines (targets are often short, e.g. "55% by 2030")
-    - creates sliding windows across full text so multi-line targets match
-    """
     if not text:
         return []
 
-    t = (
+    normalized = (
         text.replace("•", "\n• ")
-            .replace("·", "\n· ")
-            .replace("–", "-")
-            .replace("—", "-")
+        .replace("·", "\n· ")
+        .replace("–", "-")
+        .replace("—", "-")
     )
 
-    parts: List[str] = []
-    for line in t.split("\n"):
+    lines: List[str] = []
+    for line in normalized.split("\n"):
         line = line.strip()
         if not line:
             continue
+        for part in re.split(r"(?<=[\.!?])\s+|;\s+|\|\s+", line):
+            part = part.strip()
+            if len(part) >= 25:
+                lines.append(part)
 
-        sub = re.split(r"(?<=[\.\!\?])\s+|;\s+|\|\s+| - ", line)
-        for s in sub:
-            s = s.strip()
-            if not s:
-                continue
-            if len(s) >= 8:
-                parts.append(s)
+    full = re.sub(r"\s+", " ", normalized).strip()
+    windows = [full[i : i + 900] for i in range(0, len(full), 280) if full[i : i + 900].strip()]
 
-    full = re.sub(r"\s+", " ", t).strip()
-    windows: List[str] = []
-    step = 250
-    win = 900
-    for i in range(0, len(full), step):
-        w = full[i:i + win].strip()
-        if w:
-            windows.append(w)
-
-    return parts + windows
+    return lines + windows
 
 
 def clip(s: str, n: int = 280) -> str:
@@ -281,190 +196,145 @@ def clip(s: str, n: int = 280) -> str:
     return s[: n - 1].rstrip() + "…"
 
 
-def page_has_plan(text: str) -> bool:
-    return bool(PLAN_KEYWORDS.search(text or ""))
+def materiality_score(chunk: str, page_url: str) -> int:
+    score = 0
+    if CLIMATE_CONTEXT.search(chunk):
+        score += 1
+    if MATERIAL_TARGET.search(chunk):
+        score += 2
+    if ABSOLUTE_CLAIMS.search(chunk):
+        score += 2
+    if len(chunk) > 90:
+        score += 1
+    if NON_MATERIAL_URL_HINT.search(page_url):
+        score -= 1
+    return score
 
 
-# ---------------------------
-# Rule evaluation
-# ---------------------------
- 
-  def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
-    issues: List[Finding] = []
-    has_plan = page_has_plan(text)
+def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
     chunks = make_chunks(text)
+    if not chunks:
+        return []
 
-    # Heuristics to avoid over-flagging nav/headings
-    HEADING_LIKE = re.compile(
-        r"^(our|about|esg|environment|social|governance|sustainability|ambitions?|strategy|policy|report|reports?)\b",
-        re.I,
-    )
-    CLAIM_VERB = re.compile(
-        r"\b(aim|target|commit|pledge|will|shall|plan|reduce|cut|lower|decrease|improve|support|work\s+towards)\b",
-        re.I,
-    )
+    has_substantiation = bool(PLAN_SUBSTANTIATION.search(text))
+    issues: List[Finding] = []
+    seen: Set[Tuple[str, str]] = set()
 
-    def is_noise(ch: str) -> bool:
-        c = (ch or "").strip()
-        if len(c) < 35:
-            return True
-        # Pure headings / titles (no verbs)
-        if HEADING_LIKE.match(c) and not CLAIM_VERB.search(c):
-            return True
-        # Too “menu-ish”
-        if c.count(" | ") >= 2:
-            return True
-        return False
-
-    # Per-page caps (Greenguard-style: few representative issues)
-    cap = {
-        "FUTURE_TARGET": 1,
-        "ABSOLUTE_CLAIM": 1,
-        "GENERIC_ENVIRONMENTAL_CLAIM": 2,
-        "ENVIRONMENTAL_FRAMING": 2,
-    }
-    count = {k: 0 for k in cap.keys()}
-
-    # Dedup within page
-    seen: Set[Tuple[str, str]] = set()  # (category, normalized_claim)
-
-    def add_issue(category: str, severity: str, message: str, evidence: str, how_to_fix: str):
-        nonlocal issues
-        if category in cap and count[category] >= cap[category]:
-            return
-
-        ev = clip(evidence, 280)
-        norm = re.sub(r"\s+", " ", ev.lower()).strip()
-        key = (category, norm)
+    def add_issue(category: str, severity: str, message: str, evidence: str, how_to_fix: str) -> None:
+        normalized = re.sub(r"\s+", " ", evidence.lower()).strip()
+        key = (category, normalized)
         if key in seen:
             return
         seen.add(key)
-
         issues.append(
             Finding(
                 category=category,
                 url=page_url,
                 message=message,
-                evidence=ev,
+                evidence=clip(evidence),
                 severity=severity,
                 how_to_fix=how_to_fix,
             )
         )
-        if category in count:
-            count[category] += 1
 
-    # 1) FUTURE TARGET (High/Medium)
-    for ch in chunks:
-        if is_noise(ch):
-            continue
-        m = FUTURE_TARGET.search(ch)
-        if not m:
+    for chunk in chunks:
+        if materiality_score(chunk, page_url) < 3:
             continue
 
-        pct = m.group(3)
-        year = m.group(6)
+        target_match = MATERIAL_TARGET.search(chunk)
+        if target_match:
+            pct = target_match.group(3)
+            year = target_match.group(6)
+            severity = "medium" if has_substantiation else "high"
+            message = (
+                f"Materiële klimaatclaim met target ({pct} tegen {year}) zonder concrete onderbouwing nabij de claim."
+                if severity == "high"
+                else f"Materiële klimaatclaim met target ({pct} tegen {year}) gevonden; verifieer volledigheid van onderbouwing."
+            )
+            add_issue(
+                category="MATERIAL_TARGET_CLAIM",
+                severity=severity,
+                message=message,
+                evidence=chunk,
+                how_to_fix="Vermeld scope 1/2/3, baseline jaar, meetmethode, tussendoelen en publieke voortgangsrapportering.",
+            )
 
-        if has_plan:
-            sev = "medium"
-            msg = f"Future target mentioned ({pct} by {year}) — check if plan details are concrete and verifiable."
-        else:
-            sev = "high"
-            msg = f"Future climate/emissions target ({pct} by {year}) without clear implementation plan context."
+        if ABSOLUTE_CLAIMS.search(chunk):
+            severity = "medium" if has_substantiation else "high"
+            offset_note = " Vermeld expliciet de rol van offsets/certificaten." if OFFSET_HINT.search(chunk) else ""
+            message = (
+                "Materiële absolute claim (net zero/carbon neutral) zonder duidelijke afbakening of bewijs."
+                if severity == "high"
+                else "Materiële absolute claim (net zero/carbon neutral) gevonden; controleer afbakening en bewijs."
+            )
+            add_issue(
+                category="MATERIAL_ABSOLUTE_CLAIM",
+                severity=severity,
+                message=message,
+                evidence=chunk,
+                how_to_fix=(
+                    "Specifieer organisatorische en operationele scope, baseline, methodologie en onafhankelijke assurance."
+                    + offset_note
+                ),
+            )
 
-        add_issue(
-            category="FUTURE_TARGET",
-            severity=sev,
-            message=msg,
-            evidence=ch,
-            how_to_fix=(
-                "Voeg baseline year, scope 1/2/3, methode/standaard, interim targets en bewijs/rapportage toe (liefst assurance)."
-            ),
-        )
+    return issues
 
-    # 2) ABSOLUTE CLAIMS (High/Medium)
-    for ch in chunks:
-        if is_noise(ch):
-            continue
-        if not ABSOLUTE_CLAIMS.search(ch):
-            continue
 
-        if has_plan:
-            sev = "medium"
-            msg = "Absolute climate claim (net zero/carbon neutral/etc.) — verify scope and substantiation."
-        else:
-            sev = "high"
-            msg = "Absolute climate claim (net zero/carbon neutral/etc.) without nearby substantiation."
-
-        add_issue(
-            category="ABSOLUTE_CLAIM",
-            severity=sev,
-            message=msg,
-            evidence=ch,
-            how_to_fix=(
-                "Maak scope (1/2/3), boundary, methode, baselines en offsets (indien gebruikt) expliciet + link bewijs/assurance."
-            ),
-        )
-
-   
-# ---------------------------
-# Crawl + scan
-# ---------------------------
 def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding]]:
     start_url = normalize_url(start_url)
     if not start_url:
         return 0, []
 
-    session = requests.Session()
     visited: Set[str] = set()
     queue: deque[str] = deque([start_url])
+    session = requests.Session()
 
-    findings: List[Finding] = []
+    all_findings: List[Finding] = []
 
     while queue and len(visited) < max_pages:
         url = queue.popleft()
-        if url in visited:
-            continue
-        if not same_domain(start_url, url):
+        if url in visited or not same_domain(start_url, url):
             continue
 
         html = fetch_html(url, session=session)
         visited.add(url)
-
         if not html:
             continue
 
-        # Enqueue more links
-        for link in extract_links(url, html):
+        links = extract_links(url, html)
+        prioritized = sorted(
+            links,
+            key=lambda link: 0 if re.search(r"sustain|esg|climate|environment|duurzaam|impact", link, re.I) else 1,
+        )
+        for link in prioritized:
             if link not in visited and same_domain(start_url, link):
                 queue.append(link)
 
         text = html_to_text(html)
-        findings.extend(find_issues_on_page(url, text))
-
+        all_findings.extend(find_issues_on_page(url, text))
         time.sleep(0.12)
 
-    # Deduplicate
-    uniq = {}
-    for f in findings:
-        key = (f.url, f.category, f.message, (f.evidence or "")[:120])
-        uniq[key] = f
-    findings = list(uniq.values())
+    dedup = {}
+    for finding in all_findings:
+        key = (finding.category, finding.url, finding.evidence[:120])
+        dedup[key] = finding
+    findings = list(dedup.values())
 
-    # Sort: high first then medium
-    findings.sort(key=lambda x: (0 if x.severity == "high" else 1, x.url, x.category))
-    return len(visited), findings
+    findings.sort(key=lambda f: (0 if f.severity == "high" else 1, f.category, f.url))
+
+    high_findings = [f for f in findings if f.severity == "high"][:5]
+    medium_findings = [f for f in findings if f.severity == "medium"][:8]
+
+    return len(visited), high_findings + medium_findings
 
 
 def calc_risk_score(findings: List[Finding]) -> int:
     high = sum(1 for f in findings if f.severity == "high")
-    med = sum(1 for f in findings if f.severity == "medium")
-    score = high * 25 + med * 10
-    return max(0, min(100, score))
+    medium = sum(1 for f in findings if f.severity == "medium")
+    return max(0, min(100, high * 25 + medium * 10))
 
 
-# ---------------------------
-# Routes
-# ---------------------------
 @app.get("/")
 async def home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
@@ -473,6 +343,8 @@ async def home(request: Request):
 @app.post("/scan")
 async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)):
     target = normalize_url(url)
+    if not target:
+        return RedirectResponse(url="/", status_code=303)
 
     try:
         max_pages_int = int(max_pages)
@@ -480,57 +352,36 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
         max_pages_int = 10
     max_pages_int = max(1, min(50, max_pages_int))
 
-    if not target:
-        return RedirectResponse(url="/", status_code=303)
-
     pages_scanned, findings_obj = scan_site(target, max_pages=max_pages_int)
     risk = calc_risk_score(findings_obj)
 
-    # Old schema (optional compatibility)
-    findings = [
-        {
-            "category": f.category,
-            "url": f.url,
-            "message": f.message,
-            "how_to_fix": f.how_to_fix,
-            "evidence": f.evidence,
-            "severity": f.severity,
-        }
-        for f in findings_obj
-    ]
-
-    # report.html schema
     def to_template_finding(f: Finding) -> dict:
         label = f.category.replace("_", " ").title()
         notes = f.message
         if f.how_to_fix:
             notes = f"{notes} | Fix: {clip(f.how_to_fix, 160)}"
-        return {
-            "label": label,
-            "snippet": f.evidence,
-            "page_url": f.url,
-            "notes": notes,
-        }
-
-    findings_high = [to_template_finding(f) for f in findings_obj if f.severity == "high"]
-    findings_medium = [to_template_finding(f) for f in findings_obj if f.severity == "medium"]
-    findings_low = [to_template_finding(f) for f in findings_obj if f.severity == "low"]
+        return {"label": label, "snippet": f.evidence, "page_url": f.url, "notes": notes}
 
     context = {
         "request": request,
-
-        # Provide both to avoid empty URL field across template versions
         "target_url": target,
         "input_url": target,
-
         "pages_scanned": pages_scanned,
         "risk_score": risk,
-
-        # Provide both schemas
-        "findings": findings,
-        "findings_high": findings_high,
-        "findings_medium": findings_medium,
-        "findings_low": findings_low,
+        "findings": [
+            {
+                "category": f.category,
+                "url": f.url,
+                "message": f.message,
+                "how_to_fix": f.how_to_fix,
+                "evidence": f.evidence,
+                "severity": f.severity,
+            }
+            for f in findings_obj
+        ],
+        "findings_high": [to_template_finding(f) for f in findings_obj if f.severity == "high"],
+        "findings_medium": [to_template_finding(f) for f in findings_obj if f.severity == "medium"],
+        "findings_low": [],
     }
 
     return templates.TemplateResponse("report.html", context)
