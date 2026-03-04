@@ -107,7 +107,11 @@
 
           <footer class="issue-foot">
             <small class="muted">Source page</small>
-            <small><a href="{{ f.page_url }}" target="_blank">{{ f.page_url }}</a></small>
+            {% if f.page_url_readable %}
+              <small><a href="{{ f.page_url }}" target="_blank">{{ f.page_url_label }}</a></small>
+            {% else %}
+              <small>{{ f.page_url_label }}</small>
+            {% endif %}
           </footer>
         </article>
       {% endfor %}
