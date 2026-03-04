@@ -78,7 +78,9 @@
 
       {% for f in findings_high %}
         <div class="issue issue-red">
-          <strong>HIGH:</strong> {{ f.label }}<br>
+          <strong>Potential Breach #{{ loop.index }}</strong><br>
+          <small>Severity: high</small><br>
+          <strong>Detection:</strong> {{ f.label }}<br>
           {{ f.snippet }}<br>
           <small>{{ f.page_url }}</small>
         </div>
@@ -86,7 +88,9 @@
 
       {% for f in findings_medium %}
         <div class="issue issue-yellow">
-          <strong>MEDIUM:</strong> {{ f.label }}<br>
+          <strong>Potential Breach #{{ high_count + loop.index }}</strong><br>
+          <small>Severity: medium</small><br>
+          <strong>Detection:</strong> {{ f.label }}<br>
           {{ f.snippet }}<br>
           <small>{{ f.page_url }}</small>
         </div>
