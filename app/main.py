@@ -26,6 +26,8 @@ CLIMATE_CONTEXT = re.compile(
     re.I,
 )
 
+SUSTAINABILITY_CONTEXT = re.compile(r"\b(sustainab(?:le|ility)|esg|environmental|duurza+am)\b", re.I)
+
 PLAN_SUBSTANTIATION = re.compile(
     r"\b(baseline\s*year|base\s*year|basisjaar|referentiejaar|scope\s*1|scope\s*2|scope\s*3|"
     r"interim\s*target|milestone|roadmap|transition\s*plan|actieplan|capex|opex|investment|"
@@ -48,6 +50,19 @@ ABSOLUTE_CLAIMS = re.compile(
 
 OFFSET_HINT = re.compile(r"\b(offset|compensat|certificate|credit)\b", re.I)
 
+GENERIC_SUSTAINABILITY_CLAIM = re.compile(
+    r"\b(sustainable\s+future|more\s+sustainable\s+future|sustainable\s+hr|"
+    r"focus\s+on\s+sustainability|esg[-\s]?inspired|spark\s+a\s+sustainable\s+future)\b",
+    re.I,
+)
+
+GENERIC_SUBSTANTIATION_HINT = re.compile(
+    r"\b(iso\s*14001|eu\s*ecolabel|type\s*i\s*ecolabel|certifi(?:ed|cation)|"
+    r"third[-\s]?party\s+verified|verified|lca|life\s*cycle|scope\s*1|scope\s*2|scope\s*3|"
+    r"baseline\s*year|science[-\s]?based|sbti|ghg\s*protocol|\d{1,3}\s*(%|percent)\s*(by|before|in)\s*20\d{2})\b",
+    re.I,
+)
+
 NON_MATERIAL_URL_HINT = re.compile(r"/(news|blog|events|careers|jobs|investors?)/", re.I)
 
 
@@ -62,8 +77,10 @@ class Finding:
 
 
 RULEBOOK = {
+    "FUTURE_TARGET": "EmpCo Art. 5/6 — Toekomstige milieu-prestatieclaims (bv. % reductie tegen 2030) vereisen een duidelijk, publiek en verifieerbaar implementatieplan.",
     "MATERIAL_TARGET_CLAIM": "EmpCo Art. 5/6 — Een materiële klimaatdoelclaim moet onderbouwd zijn met scope, baseline, methodologie en voortgangsinformatie.",
     "MATERIAL_ABSOLUTE_CLAIM": "EmpCo Art. 5 — Absolute claims (bv. net zero/carbon neutral) moeten duidelijk afgebakend en verifieerbaar zijn.",
+    "GENERIC_CLAIM": "EmpCo Art. 5/6 — Generieke duurzaamheidsclaims (bv. 'sustainable future') zijn misleidend zonder duidelijke, verifieerbare specificatie.",
 }
 
 
@@ -202,10 +219,20 @@ def make_chunks(text: str) -> List[str]:
             if len(part) >= 25:
                 lines.append(part)
 
-    full = re.sub(r"\s+", " ", normalized).strip()
-    windows = [full[i : i + 900] for i in range(0, len(full), 280) if full[i : i + 900].strip()]
+    unique_lines: List[str] = []
+    seen = set()
+    for line in lines:
+        key = re.sub(r"\s+", " ", line.lower()).strip()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_lines.append(line)
 
-    return lines + windows
+    if unique_lines:
+        return unique_lines
+
+    fallback = re.sub(r"\s+", " ", normalized).strip()
+    return [fallback] if len(fallback) >= 25 else []
 
 
 def clip(s: str, n: int = 280) -> str:
@@ -219,9 +246,13 @@ def materiality_score(chunk: str, page_url: str) -> int:
     score = 0
     if CLIMATE_CONTEXT.search(chunk):
         score += 1
+    if SUSTAINABILITY_CONTEXT.search(chunk):
+        score += 1
     if MATERIAL_TARGET.search(chunk):
         score += 2
     if ABSOLUTE_CLAIMS.search(chunk):
+        score += 2
+    if GENERIC_SUSTAINABILITY_CLAIM.search(chunk):
         score += 2
     if len(chunk) > 90:
         score += 1
@@ -235,7 +266,7 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
     if not chunks:
         return []
 
-    has_substantiation = bool(PLAN_SUBSTANTIATION.search(text))
+    has_generic_substantiation = bool(GENERIC_SUBSTANTIATION_HINT.search(text))
     issues: List[Finding] = []
     seen: Set[Tuple[str, str]] = set()
 
@@ -264,18 +295,23 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
         if target_match:
             pct = target_match.group(3)
             year = target_match.group(6)
-            severity = "medium" if has_substantiation else "high"
+            has_local_plan_substantiation = bool(PLAN_SUBSTANTIATION.search(chunk))
+            severity = "medium" if has_local_plan_substantiation else "high"
             message = (
-                f"Materiële klimaatclaim met target ({pct} tegen {year}) zonder concrete onderbouwing nabij de claim."
+                f"Toekomstige milieuclaim met target ({pct} tegen {year}) zonder concreet, verifieerbaar implementatieplan nabij de claim."
                 if severity == "high"
-                else f"Materiële klimaatclaim met target ({pct} tegen {year}) gevonden; verifieer volledigheid van onderbouwing."
+                else f"Toekomstige milieuclaim met target ({pct} tegen {year}) gevonden; verifieer volledigheid en verifieerbaarheid van het implementatieplan."
             )
             add_issue(
-                category="MATERIAL_TARGET_CLAIM",
+                category="FUTURE_TARGET",
                 severity=severity,
                 message=message,
                 evidence=chunk,
-                how_to_fix="Vermeld scope 1/2/3, baseline jaar, meetmethode, tussendoelen en publieke voortgangsrapportering.",
+                how_to_fix=(
+                    "Voeg naast de claim een publiek en verifieerbaar plan toe met baseline jaar, scopegrenzen (1/2/3), "
+                    "methodologie (bv. GHG Protocol), tussendoelen, maatregelen, governance/eigenaarschap, voortgangsrapportering "
+                    "en onafhankelijke verificatie/validatie (bv. assurance of SBTi)."
+                ),
             )
 
         if ABSOLUTE_CLAIMS.search(chunk):
@@ -294,6 +330,24 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
                 how_to_fix=(
                     "Specifieer organisatorische en operationele scope, baseline, methodologie en onafhankelijke assurance."
                     + offset_note
+                ),
+            )
+
+        generic_match = GENERIC_SUSTAINABILITY_CLAIM.search(chunk)
+        if generic_match and not has_generic_substantiation:
+            claim_text = generic_match.group(0)
+            commercial_context = bool(re.search(r"\b(offerings?|services?|producten?|solutions?)\b", chunk, re.I))
+            severity = "high" if commercial_context else "medium"
+            add_issue(
+                category="GENERIC_CLAIM",
+                severity=severity,
+                message=(
+                    f"Generieke duurzaamheidsclaim ('{claim_text}') zonder specifieke, verifieerbare milieu-eigenschap of bewijs in de nabije context."
+                ),
+                evidence=chunk,
+                how_to_fix=(
+                    "Vervang brede claim door concrete milieu-informatie (welke impact, voor welk onderdeel, welke meetmethode) "
+                    "en link naar onafhankelijke verificatie of erkend keurmerk."
                 ),
             )
 
