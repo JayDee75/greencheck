@@ -3,7 +3,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.main import find_issues_on_page
+from app.main import clean_snippet, find_issues_on_page
 
 
 def test_color_context_without_claim_is_ignored():
@@ -51,3 +51,25 @@ def test_ecovadis_explanatory_context_is_not_generic_company_claim():
         ),
     )
     assert findings == []
+
+
+def test_html_snippet_is_cleaned_to_plain_text_without_broken_entities():
+    snippet = clean_snippet(
+        '<li><strong>Corporate milestones</strong>: stay informed about our sustainable growth, ESG initiatives, '
+        'and our continued journey as a European leader, helping 105,000 customers with their HR, pay &amp; time.</li>'
+    )
+    assert snippet == (
+        'Corporate milestones: stay informed about our sustainable growth, ESG initiatives, and our continued journey '
+        'as a European leader, helping 105,000 customers with their HR, pay & time.'
+    )
+    assert '<li>' not in snippet
+    assert '<strong>' not in snippet
+    assert '&amp' not in snippet
+
+
+def test_press_page_navigation_context_is_not_flagged_as_generic_claim():
+    findings = find_issues_on_page(
+        'https://www.sdworx.com/en-en/about-sd-worx/press',
+        'stay informed about our sustainable growth, ESG initiatives, and our continued journey as a European leader, helping 105,000 customers with their HR, pay & time.',
+    )
+    assert all(f.category != 'GENERIC_ENVIRONMENTAL_CLAIMS' for f in findings)

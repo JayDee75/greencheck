@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import re
 import time
@@ -102,6 +103,11 @@ ASSET_PATH_HINT = re.compile(
 IMAGE_FILE_HINT = re.compile(
     r"(?i)\b(?:image|img|photo|picture|banner|hero|thumbnail|forest|grass|globe|"
     r"close[-_]?up)[-_a-z0-9]{0,80}\.(?:jpg|jpeg|png|gif|webp|svg|avif)\b"
+)
+INFO_EDITORIAL_URL_HINT = re.compile(r"/(press|newsroom|publications?|media|insights?)/", re.I)
+INFO_EDITORIAL_TEXT_HINT = re.compile(
+    r"\b(press|newsroom|publications?|latest\s+news|read\s+more|stay\s+informed|milestones?)\b",
+    re.I,
 )
 
 
@@ -320,7 +326,10 @@ def clip(s: str, n: int = 280) -> str:
 
 
 def clean_snippet(s: str) -> str:
-    snippet = re.sub(r"\s+", " ", (s or "")).strip()
+    parsed = BeautifulSoup(html.unescape(s or ""), "html.parser")
+    snippet = parsed.get_text(separator=" ")
+    snippet = re.sub(r"\s+", " ", snippet).strip()
+    snippet = re.sub(r"\s+([:;,.!?])", r"\1", snippet)
     snippet = re.sub(r"[^\x20-\x7E\u00A0-\u024F\u2018-\u201F€£¥]", "", snippet)
     return snippet
 
@@ -426,9 +435,17 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
 
         has_claim_subject = bool(CLAIM_SUBJECT_HINT.search(chunk) or CLAIM_ACTION_HINT.search(chunk))
         is_third_party_context = bool(THIRD_PARTY_EXPLANATORY_CONTEXT.search(chunk))
-        if generic_match and not has_generic_substantiation and not has_absolute_claim and has_claim_subject and not is_third_party_context:
+        commercial_context = bool(re.search(r"\b(offerings?|services?|producten?|solutions?)\b", chunk, re.I))
+        is_editorial_context = bool(INFO_EDITORIAL_URL_HINT.search(page_url) or INFO_EDITORIAL_TEXT_HINT.search(chunk))
+        if (
+            generic_match
+            and not has_generic_substantiation
+            and not has_absolute_claim
+            and has_claim_subject
+            and not is_third_party_context
+            and not (is_editorial_context and not commercial_context)
+        ):
             claim_text = generic_match.group(0)
-            commercial_context = bool(re.search(r"\b(offerings?|services?|producten?|solutions?)\b", chunk, re.I))
             severity = "high" if commercial_context else "medium"
             add_issue(
                 category="GENERIC_ENVIRONMENTAL_CLAIMS",
