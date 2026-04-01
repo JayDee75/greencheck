@@ -63,6 +63,7 @@ h1{ margin: 0 0 10px; font-size: 1.6rem; }
 h2{ margin: 0 0 10px; font-size: 1.15rem; }
 
 .muted{ color: var(--muted); }
+.small-subtitle{ font-size: .9rem; }
 .disclaimer{ font-size: .92rem; color: var(--muted); }
 
 label{
@@ -214,4 +215,16 @@ pre{
 .empty{
   background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px;
   padding:12px; color:#334155;
+}
+
+.rule-categories{
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid #eef2f7;
+}
+.rule-categories ol{
+  margin: 8px 0 0 18px;
+}
+.rule-categories li{
+  margin: 8px 0;
 }

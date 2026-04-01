@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="nl">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
@@ -16,16 +16,16 @@
     </header>
 
     <section class="card">
-      <h1>ECD website scan (EU 2024/825)</h1>
-      <p class="muted">
-        Beta-scan op publieke webpagina’s binnen hetzelfde domein. Detecteert mogelijke red/amber/green flags voor ECD-risico (indicatief).
+      <h1>EU Greenwashing Compliance Check (EU 2024/825)</h1>
+      <p class="muted small-subtitle">
+        Beta scan of public web pages within the same domain. Detects potential red and amber flags indicating EmpCo Directive (EU) 2024/825 non-compliance, which aims to prevent greenwashing. This tool is guidance only; for an official compliance assessment, consult Durably for a qualified legal professional.
       </p>
 
       <form method="post" action="/scan" class="form">
         <label>Website URL</label>
-        <input name="url" placeholder="https://www.voorbeeld.be" required />
+        <input name="url" placeholder="https://www.example.com" required />
 
-        <label>Max pagina’s</label>
+        <label>Max pages</label>
         <input name="max_pages" type="number" min="1" max="30" value="12" />
 
         <button type="submit">Start scan</button>
@@ -34,7 +34,7 @@
 
     <section class="card">
       <p class="disclaimer">
-        Disclaimer: Deze scan is indicatief en vormt geen juridisch advies.
+        Disclaimer: This scan is indicative and does not constitute legal advice.
       </p>
     </section>
   </main>

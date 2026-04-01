@@ -93,11 +93,44 @@ class Finding:
     how_to_fix: str
 
 
+SELF_MADE_LABEL = re.compile(
+    r"\b(our\s+(?:eco|green|sustainab(?:ility|le))\s*(?:label|seal|badge)|"
+    r"internal\s+certification|own\s+certification|self[-\s]?certified|"
+    r"proprietary\s+(?:eco|green)\s*(?:label|badge)|"
+    r"eco\s*(?:label|seal|badge)\s+by\s+us)\b",
+    re.I,
+)
+
+OFFICIAL_LABEL_HINT = re.compile(
+    r"\b(eu\s*ecolabel|energy\s*star|blue\s*angel|nordic\s*swan|fsc|pefc|"
+    r"fairtrade|rainforest\s*alliance|type\s*i\s*ecolabel|iso\s*14024)\b",
+    re.I,
+)
+
 RULEBOOK = {
-    "MATERIAL_TARGET_CLAIM": "Directive (EU) 2024/825 — UCPD art. 6(1) en art. 7(1): doelclaims moeten specifiek, verifieerbaar en niet-misleidend zijn.",
-    "MATERIAL_ABSOLUTE_CLAIM": "Directive (EU) 2024/825 — UCPD Annex I (nieuwe greenwashing-verboden) en art. 6(1): absolute claims vereisen duidelijke afbakening en bewijs.",
-    "GENERIC_CLAIM": "Directive (EU) 2024/825 — UCPD Annex I (generieke milieuclaims zonder erkende uitstekende milieuprestatie zijn verboden).",
-    "ECD_RESTRICTED_TERM": "Directive (EU) 2024/825 — controleer claim tegen aangepaste UCPD art. 6(1), art. 7(1) en Annex I (verboden greenwashing-praktijken).",
+    "GENERIC_ENVIRONMENTAL_CLAIMS": (
+        "Detected Rule Violation: This is a generic environmental claim used as a marketing-style statement "
+        "without clear, specific, and verifiable environmental performance information."
+    ),
+    "CARBON_NEUTRALITY_CLAIMS": (
+        "Detected Rule Violation: This is a product/service-level carbon neutrality style claim presented without a clear, "
+        "auditable basis and boundaries, creating a high risk of misleading neutrality messaging."
+    ),
+    "FUTURE_NET_ZERO_TARGETS": (
+        "Detected Rule Violation: This future net zero / emissions reduction target is presented without a concrete implementation "
+        "plan, quantified milestones, or clear verification details."
+    ),
+    "SUSTAINABILITY_LABELS": (
+        "Detected Rule Violation: This sustainability seal/label appears self-created or insufficiently linked to a recognised "
+        "independent certification scheme."
+    ),
+}
+
+CATEGORY_LABELS = {
+    "GENERIC_ENVIRONMENTAL_CLAIMS": "Generic Environmental Claim",
+    "CARBON_NEUTRALITY_CLAIMS": "Carbon Neutrality Claim",
+    "FUTURE_NET_ZERO_TARGETS": "Future Net Zero Target",
+    "SUSTAINABILITY_LABELS": "Sustainability Label",
 }
 
 
@@ -259,6 +292,12 @@ def clip(s: str, n: int = 280) -> str:
     return s[: n - 1].rstrip() + "…"
 
 
+def clean_snippet(s: str) -> str:
+    snippet = re.sub(r"\s+", " ", (s or "")).strip()
+    snippet = re.sub(r"[^\x20-\x7E\u00A0-\u024F\u2018-\u201F€£¥]", "", snippet)
+    return snippet
+
+
 def materiality_score(chunk: str, page_url: str) -> int:
     score = 0
     if CLIMATE_CONTEXT.search(chunk):
@@ -315,35 +354,40 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
             year = target_match.group(6)
             severity = "medium" if has_plan_substantiation else "high"
             message = (
-                f"Materiële klimaatclaim met target ({pct} tegen {year}) zonder concrete onderbouwing nabij de claim."
+                f"Future emissions target ({pct} by {year}) lacks concrete implementation details, quantified milestones, "
+                "or clear third-party validation."
                 if severity == "high"
-                else f"Materiële klimaatclaim met target ({pct} tegen {year}) gevonden; verifieer volledigheid van onderbouwing."
+                else f"Future emissions target ({pct} by {year}) needs tighter implementation detail and verification evidence."
             )
             add_issue(
-                category="MATERIAL_TARGET_CLAIM",
+                category="FUTURE_NET_ZERO_TARGETS",
                 severity=severity,
                 message=message,
-                evidence=chunk,
-                how_to_fix="Vermeld scope 1/2/3, baseline jaar, meetmethode, tussendoelen en publieke voortgangsrapportering.",
+                evidence=clean_snippet(chunk),
+                how_to_fix=(
+                    "Recommendations and advice: Add a concrete transition plan with scope boundaries (Scopes 1, 2, and where relevant 3), "
+                    "a baseline year, interim yearly or multi-year milestones, investment and execution measures, and a transparent "
+                    "monitoring method with independent verification."
+                ),
             )
 
         has_absolute_claim = bool(ABSOLUTE_CLAIMS.search(chunk))
         if has_absolute_claim:
-            severity = "medium"
-            offset_note = " Vermeld expliciet de rol van offsets/certificaten." if OFFSET_HINT.search(chunk) else ""
+            severity = "high" if OFFSET_HINT.search(chunk) else "medium"
             message = (
-                "Materiële absolute claim (net zero/carbon neutral) zonder duidelijke afbakening of bewijs."
+                "Carbon neutrality language is used at product/service level with offsetting-style context, which is high risk."
                 if severity == "high"
-                else "Materiële absolute claim (net zero/carbon neutral) gevonden; controleer afbakening en bewijs."
+                else "Carbon neutrality language is used and should be tightened with precise boundaries and verifiable substantiation."
             )
             add_issue(
-                category="MATERIAL_ABSOLUTE_CLAIM",
+                category="CARBON_NEUTRALITY_CLAIMS",
                 severity=severity,
                 message=message,
-                evidence=chunk,
+                evidence=clean_snippet(chunk),
                 how_to_fix=(
-                    "Specifieer organisatorische en operationele scope, baseline, methodologie en onafhankelijke assurance."
-                    + offset_note
+                    "Recommendations and advice: Avoid absolute neutrality wording for products/services. Replace with precise "
+                    "contribution statements, state emissions boundaries, disclose residual emissions, and present independently "
+                    "verifiable methodology and assurance details."
                 ),
             )
 
@@ -356,29 +400,29 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
             commercial_context = bool(re.search(r"\b(offerings?|services?|producten?|solutions?)\b", chunk, re.I))
             severity = "high" if commercial_context else "medium"
             add_issue(
-                category="GENERIC_CLAIM",
+                category="GENERIC_ENVIRONMENTAL_CLAIMS",
                 severity=severity,
                 message=(
-                    f"Generieke duurzaamheidsclaim ('{claim_text}') zonder specifieke, verifieerbare milieu-eigenschap of bewijs in de nabije context."
+                    f"Generic environmental wording ('{claim_text}') is used without specific, measurable, and verifiable performance details."
                 ),
-                evidence=chunk,
+                evidence=clean_snippet(chunk),
                 how_to_fix=(
-                    "Vervang brede claim door concrete milieu-informatie (welke impact, voor welk onderdeel, welke meetmethode) "
-                    "en link naar onafhankelijke verificatie of erkend keurmerk."
+                    "Recommendations and advice: Replace the generic wording with specific, measurable and verifiable statements "
+                    "(state the environmental impact addressed, baseline, scope, metric, and achieved result). If certification is "
+                    "relied upon, reference a recognised independent scheme; otherwise clearly qualify the claim."
                 ),
             )
-        elif generic_match:
-            claim_text = generic_match.group(0)
+
+        label_match = SELF_MADE_LABEL.search(chunk)
+        if label_match and not OFFICIAL_LABEL_HINT.search(chunk):
             add_issue(
-                category="ECD_RESTRICTED_TERM",
-                severity="low",
-                message=(
-                    f"ECD-relevante term ('{claim_text}') gevonden met enige context/bewijs in de buurt; juridische verificatie aanbevolen."
-                ),
-                evidence=chunk,
+                category="SUSTAINABILITY_LABELS",
+                severity="medium",
+                message="A sustainability label or badge appears self-declared and not clearly tied to a recognised third-party scheme.",
+                evidence=clean_snippet(chunk),
                 how_to_fix=(
-                    "Valideer of de claim specifiek, verifieerbaar en niet misleidend is in de volledige commerciële context "
-                    "(inclusief productpagina, CTA en visuals)."
+                    "Recommendations and advice: Replace self-made sustainability badges with recognised third-party certification "
+                    "references where applicable, and provide clear criteria, governance, and verification details."
                 ),
             )
 
@@ -431,16 +475,13 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding]]:
 
     high_findings = [f for f in findings if f.severity == "high"][:5]
     medium_findings = [f for f in findings if f.severity == "medium"][:8]
-    low_findings = [f for f in findings if f.severity == "low"][:8]
-
-    return len(visited), high_findings + medium_findings + low_findings
+    return len(visited), high_findings + medium_findings
 
 
 def calc_risk_score(findings: List[Finding]) -> int:
     high = sum(1 for f in findings if f.severity == "high")
     medium = sum(1 for f in findings if f.severity == "medium")
-    low = sum(1 for f in findings if f.severity == "low")
-    return max(0, min(100, high * 25 + medium * 10 + low * 3))
+    return max(0, min(100, high * 25 + medium * 10))
 
 
 @app.get("/")
@@ -466,15 +507,15 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
     def to_template_finding(f: Finding) -> dict:
         readable_source = is_readable_http_url(f.url)
         return {
-            "label": f.category.replace("_", " ").title(),
+            "label": CATEGORY_LABELS.get(f.category, f.category.replace("_", " ").title()),
             "snippet": f.evidence,
             "page_url": f.url,
             "page_url_readable": readable_source,
             "page_url_label": (
-                f.url if readable_source else "Bronpagina URL onleesbaar (ongeldige of incoherente link in scanresultaat)."
+                f.url if readable_source else "Source page URL unreadable (invalid or incoherent link in scan result)."
             ),
             "message": f.message,
-            "rule": RULEBOOK.get(f.category, "Directive (EU) 2024/825 — claim moet duidelijk, juist en verifieerbaar zijn."),
+            "rule": RULEBOOK.get(f.category, "Detected Rule Violation: The claim is not sufficiently clear, accurate, and verifiable."),
             "recommendation": f.how_to_fix,
             "severity": f.severity,
         }
@@ -488,7 +529,6 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
         "findings": [to_template_finding(f) for f in findings_obj],
         "findings_high": [to_template_finding(f) for f in findings_obj if f.severity == "high"],
         "findings_medium": [to_template_finding(f) for f in findings_obj if f.severity == "medium"],
-        "findings_low": [to_template_finding(f) for f in findings_obj if f.severity == "low"],
     }
 
     return templates.TemplateResponse("report.html", context)

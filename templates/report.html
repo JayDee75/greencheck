@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="nl">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
@@ -17,11 +17,10 @@
 
     {% set high_count = findings_high|length %}
     {% set med_count  = findings_medium|length %}
-    {% set low_count  = findings_low|length %}
-    {% set total_issues = high_count + med_count + low_count %}
+    {% set total_issues = high_count + med_count %}
 
     {% if high_count >= 1 %}
-      {% set risk_label = "High Risk" %}
+      {% set risk_label = "RED Risk" %}
       {% set risk_class = "risk-high" %}
     {% elif med_count >= 1 %}
       {% set risk_label = "Medium Risk" %}
@@ -51,18 +50,18 @@
           </div>
         </div>
         <div class="meta-item">
-          <div class="meta-k">Pagina’s gescand</div>
+          <div class="meta-k">Pages scanned</div>
           <div class="meta-v">{{ pages_scanned }}</div>
         </div>
         <div class="meta-item">
-          <div class="meta-k">Risicoscore</div>
+          <div class="meta-k">Risk score</div>
           <div class="meta-v score">{{ risk_score }}/100</div>
         </div>
       </div>
 
       <div class="issues-found">
         <strong>{{ total_issues }} Issues Found</strong>
-        <span class="muted">(Red: {{ high_count }} | Amber: {{ med_count }} | Green: {{ low_count }})</span>
+        <span class="muted">(Red: {{ high_count }} | Amber: {{ med_count }})</span>
       </div>
     </section>
 
@@ -71,7 +70,7 @@
 
       {% if total_issues == 0 %}
         <div class="empty">
-          Geen issues gevonden door de huidige regels.
+          No issues were found by the current rules.
         </div>
       {% endif %}
 
@@ -84,11 +83,11 @@
               <span class="issue-no">Issue #{{ loop.index }}</span>
               <span class="issue-name">{{ f.label }}</span>
             </div>
-            <span class="tag {{ 'tag-red' if red else ('tag-yellow' if amber else 'tag-green') }}">{{ f.severity|upper }}</span>
+            <span class="tag {{ 'tag-red' if red else ('tag-yellow' if amber else 'tag-green') }}">{{ "RED" if red else ("AMBER" if amber else f.severity|upper) }}</span>
           </div>
 
           <div class="issue-section">
-            <div class="issue-k">Detected sentence</div>
+            <div class="issue-k">Detected sentence(s)</div>
             <div class="issue-box">{{ f.snippet }}</div>
           </div>
 
@@ -98,12 +97,7 @@
           </div>
 
           <div class="issue-section">
-            <div class="issue-k">Why this is flagged</div>
-            <div class="issue-box">{{ f.message }}</div>
-          </div>
-
-          <div class="issue-section">
-            <div class="issue-k">Recommendation</div>
+            <div class="issue-k">Recommendations and advice</div>
             <div class="issue-box">{{ f.recommendation }}</div>
           </div>
 
@@ -120,7 +114,16 @@
     </section>
 
     <section class="card">
-      <a class="link" href="/">← Nieuwe scan</a>
+      <a class="link" href="/">← New scan</a>
+      <div class="rule-categories">
+        <h2 class="h2">EmpCo Directive check categories (EU 2024/825)</h2>
+        <ol>
+          <li><strong>Generic Environmental Claims</strong> — Detect vague terms like “eco-friendly”, “sustainable”, or “green” without recognised ecolabel certification.</li>
+          <li><strong>Carbon Neutrality Claims</strong> — Flag banned product-level “carbon neutral” claims based on offsetting, while allowing legitimate contribution statements.</li>
+          <li><strong>Future Net Zero Targets</strong> — Identify “Net Zero by 20XX” claims that lack concrete implementation plans, numbers, or third-party verification.</li>
+          <li><strong>Sustainability Labels</strong> — Detect self-made “green seals” or badges that are not based on official third-party certification schemes.</li>
+        </ol>
+      </div>
     </section>
   </main>
 </body>

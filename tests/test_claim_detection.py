@@ -20,5 +20,14 @@ def test_absolute_claim_not_duplicated_as_generic_claim():
         "Our product is climate neutral across all operations.",
     )
     categories = [f.category for f in findings]
-    assert "MATERIAL_ABSOLUTE_CLAIM" in categories
-    assert "GENERIC_CLAIM" not in categories
+    assert "CARBON_NEUTRALITY_CLAIMS" in categories
+    assert "GENERIC_ENVIRONMENTAL_CLAIMS" not in categories
+
+
+def test_no_low_severity_findings_are_emitted():
+    findings = find_issues_on_page(
+        "https://example.com/impact",
+        "We are sustainable and eco-friendly in our services.",
+    )
+    assert findings
+    assert all(f.severity in {"high", "medium"} for f in findings)
