@@ -65,6 +65,19 @@ SAMPLES: List[Sample] = [
         expected=set(),
     ),
     Sample(
+        id="tn_image_asset_path",
+        text="/sites/default/files/2023-01/close-up-crystal-globe-resting-green-grass-forest_1920x1280_JPG.jpg",
+        expected=set(),
+    ),
+    Sample(
+        id="tn_ecovadis_explanatory_context",
+        text=(
+            "EcoVadis is the globally recognised authority in corporate sustainability ratings, evaluating companies "
+            "across four critical dimensions: Environment, Labour & Human Rights, Ethics, and Sustainable Procurement."
+        ),
+        expected=set(),
+    ),
+    Sample(
         id="mixed",
         text="Our sustainable products are climate neutral and net zero by 2040, backed by offsets.",
         expected={"GENERIC_ENVIRONMENTAL_CLAIMS", "CARBON_NEUTRALITY_CLAIMS", "FUTURE_NET_ZERO_TARGETS"},

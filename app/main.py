@@ -89,10 +89,25 @@ CLAIM_SUBJECT_HINT = re.compile(
 THIRD_PARTY_EXPLANATORY_CONTEXT = re.compile(
     r"\b(ecovadis|b\s*corp(?:oration)?|bcorp|un\s+global\s+compact|iso\s*\d{3,5}|"
     r"science\s+based\s+targets?\s+initiative|sbti|fairtrade|eu\s*ecolabel|"
-    r"ratings?|rating\s+framework|framework|methodolog(?:y|ie)|evaluation|assess(?:ment|ed)|"
-    r"third[-\s]?party|independent|certification\s+scheme)\b",
+    r"ratings?|rating\s+framework|framework|benchmark|methodolog(?:y|ie)|evaluation|assess(?:ment|ed)|"
+    r"third[-\s]?party|independent|certification\s+scheme|recogni[sz]ed\s+authority|"
+    r"sustainable\s+procurement|labou?r\s*(?:&|and)\s*human\s+rights)\b",
     re.I,
 )
+ASSET_PATH_HINT = re.compile(
+    r"(?i)(?:/(?:sites/default/files|media|assets)/|"
+    r"\.(?:jpg|jpeg|png|gif|webp|svg|avif)(?:\?[^ ]*)?$|"
+    r"\b[a-z0-9][a-z0-9._-]{3,}\.(?:jpg|jpeg|png|gif|webp|svg|avif)\b)"
+)
+IMAGE_FILE_HINT = re.compile(
+    r"(?i)\b(?:image|img|photo|picture|banner|hero|thumbnail|forest|grass|globe|"
+    r"close[-_]?up)[-_a-z0-9]{0,80}\.(?:jpg|jpeg|png|gif|webp|svg|avif)\b"
+)
+
+
+def is_asset_or_image_text(chunk: str) -> bool:
+    normalized = (chunk or "").strip()
+    return bool(ASSET_PATH_HINT.search(normalized) or IMAGE_FILE_HINT.search(normalized))
 
 
 @dataclass
@@ -357,6 +372,8 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
         )
 
     for chunk in chunks:
+        if is_asset_or_image_text(chunk):
+            continue
         if materiality_score(chunk, page_url) < 3:
             continue
 
