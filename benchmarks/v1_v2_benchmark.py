@@ -78,6 +78,14 @@ SAMPLES: List[Sample] = [
         expected=set(),
     ),
     Sample(
+        id="tn_press_page_navigation_context",
+        text=(
+            "stay informed about our sustainable growth, ESG initiatives, and our continued journey as a European "
+            "leader, helping 105,000 customers with their HR, pay & time."
+        ),
+        expected=set(),
+    ),
+    Sample(
         id="mixed",
         text="Our sustainable products are climate neutral and net zero by 2040, backed by offsets.",
         expected={"GENERIC_ENVIRONMENTAL_CLAIMS", "CARBON_NEUTRALITY_CLAIMS", "FUTURE_NET_ZERO_TARGETS"},
