@@ -64,6 +64,17 @@ GENERIC_SUBSTANTIATION_HINT = re.compile(
 )
 
 NON_MATERIAL_URL_HINT = re.compile(r"/(news|blog|events|careers|jobs|investors?)/", re.I)
+COLOR_CONTEXT = re.compile(r"\b(color|colour|pantone|rgb|hex|paint|groen|kleur)\b", re.I)
+RESTRICTED_GENERIC_TERM = re.compile(
+    r"\b("
+    r"sustainable|conscious|responsible|environmentally\s*friendly|eco[-\s]?friendly|green|"
+    r"carbon\s*friendly|energy\s*efficient|carbon\s*neutral|climate\s*neutral|"
+    r"duurzaam|milieuvriendelijk|ecologisch|klimaatneutraal|co2[-\s]?neutraal|"
+    r"nachhaltig|umweltfreundlich|klimaneutral|responsable|durable|"
+    r"respectueux\s+de\s+l[’']environnement|neutre\s+en\s+carbone"
+    r")\b",
+    re.I,
+)
 
 
 @dataclass
@@ -77,9 +88,10 @@ class Finding:
 
 
 RULEBOOK = {
-    "MATERIAL_TARGET_CLAIM": "EmpCo Art. 5/6 — Een materiële klimaatdoelclaim moet onderbouwd zijn met scope, baseline, methodologie en voortgangsinformatie.",
-    "MATERIAL_ABSOLUTE_CLAIM": "EmpCo Art. 5 — Absolute claims (bv. net zero/carbon neutral) moeten duidelijk afgebakend en verifieerbaar zijn.",
-    "GENERIC_CLAIM": "EmpCo Art. 5/6 — Generieke duurzaamheidsclaims (bv. 'sustainable future') zijn misleidend zonder duidelijke, verifieerbare specificatie.",
+    "MATERIAL_TARGET_CLAIM": "ECD (Directive (EU) 2024/825) — Toekomstige milieuclaims vereisen een concreet, verifieerbaar implementatieplan met meetbare doelstellingen.",
+    "MATERIAL_ABSOLUTE_CLAIM": "ECD (Directive (EU) 2024/825) — Absolute claims (zoals klimaat-/CO2-neutraliteit) moeten helder afgebakend en met robuust bewijs onderbouwd zijn.",
+    "GENERIC_CLAIM": "ECD (Directive (EU) 2024/825) — Generieke milieuclaims zonder duidelijke, verifieerbare specificatie vormen een verhoogd misleidingsrisico.",
+    "RESTRICTED_GENERIC_TERM": "ECD (Directive (EU) 2024/825) — Brede milieuclaims vragen expliciete context en bewijs; ontbreekt dit, dan is er verhoogd handhavingsrisico.",
 }
 
 
@@ -288,7 +300,9 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
         )
 
     for chunk in chunks:
-        if materiality_score(chunk, page_url) < 3:
+        chunk_score = materiality_score(chunk, page_url)
+        restricted = RESTRICTED_GENERIC_TERM.search(chunk)
+        if chunk_score < 3 and not restricted:
             continue
 
         target_match = MATERIAL_TARGET.search(chunk)
@@ -346,6 +360,35 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
                 ),
             )
 
+        if restricted:
+            term = restricted.group(0)
+            contextual_climate = bool(CLIMATE_CONTEXT.search(chunk) or SUSTAINABILITY_CONTEXT.search(chunk))
+            color_usage = term.lower() == "green" and bool(COLOR_CONTEXT.search(chunk))
+            has_substantiation = bool(
+                GENERIC_SUBSTANTIATION_HINT.search(chunk)
+                or PLAN_SUBSTANTIATION.search(chunk)
+                or re.search(r"\b(certif|verified|lca|scope\s*[123])\b", chunk, re.I)
+            )
+            if not color_usage:
+                if contextual_climate and not has_substantiation:
+                    sev = "high"
+                elif contextual_climate and has_substantiation:
+                    sev = "medium"
+                else:
+                    sev = "low"
+                add_issue(
+                    category="RESTRICTED_GENERIC_TERM",
+                    severity=sev,
+                    message=(
+                        f"Term '{term}' kan als generieke milieuclaim worden opgevat. "
+                        "Controleer of de claim specifiek, aantoonbaar en juridisch houdbaar is."
+                    ),
+                    evidence=chunk,
+                    how_to_fix=(
+                        "Voeg precieze claim-omvang, bewijsbron en verificatie toe, of vervang door feitelijke product-/dienstinformatie."
+                    ),
+                )
+
     return issues
 
 
@@ -390,18 +433,21 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding]]:
         dedup[key] = finding
     findings = list(dedup.values())
 
-    findings.sort(key=lambda f: (0 if f.severity == "high" else 1, f.category, f.url))
+    severity_rank = {"high": 0, "medium": 1, "low": 2}
+    findings.sort(key=lambda f: (severity_rank.get(f.severity, 3), f.category, f.url))
 
-    high_findings = [f for f in findings if f.severity == "high"][:5]
-    medium_findings = [f for f in findings if f.severity == "medium"][:8]
+    high_findings = [f for f in findings if f.severity == "high"][:8]
+    medium_findings = [f for f in findings if f.severity == "medium"][:12]
+    low_findings = [f for f in findings if f.severity == "low"][:10]
 
-    return len(visited), high_findings + medium_findings
+    return len(visited), high_findings + medium_findings + low_findings
 
 
 def calc_risk_score(findings: List[Finding]) -> int:
     high = sum(1 for f in findings if f.severity == "high")
     medium = sum(1 for f in findings if f.severity == "medium")
-    return max(0, min(100, high * 25 + medium * 10))
+    low = sum(1 for f in findings if f.severity == "low")
+    return max(0, min(100, high * 25 + medium * 10 + low * 3))
 
 
 @app.get("/")
@@ -435,9 +481,13 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
                 f.url if readable_source else "Bronpagina URL onleesbaar (ongeldige of incoherente link in scanresultaat)."
             ),
             "message": f.message,
-            "rule": RULEBOOK.get(f.category, "EmpCo Art. 5 — Claim moet duidelijk, juist en verifieerbaar zijn."),
+            "rule": RULEBOOK.get(
+                f.category,
+                "ECD (Directive (EU) 2024/825) — Claim moet duidelijk, juist en verifieerbaar zijn.",
+            ),
             "recommendation": f.how_to_fix,
             "severity": f.severity,
+            "flag": "Red" if f.severity == "high" else "Amber" if f.severity == "medium" else "Green",
         }
 
     context = {
@@ -449,7 +499,7 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
         "findings": [to_template_finding(f) for f in findings_obj],
         "findings_high": [to_template_finding(f) for f in findings_obj if f.severity == "high"],
         "findings_medium": [to_template_finding(f) for f in findings_obj if f.severity == "medium"],
-        "findings_low": [],
+        "findings_low": [to_template_finding(f) for f in findings_obj if f.severity == "low"],
     }
 
     return templates.TemplateResponse("report.html", context)
