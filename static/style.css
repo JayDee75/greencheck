@@ -184,6 +184,7 @@ pre{
 }
 .issue-red{ border-left:6px solid #ef4444; }
 .issue-yellow{ border-left:6px solid #f59e0b; }
+.issue-green{ border-left:6px solid #22c55e; }
 
 .issue-head{ display:flex; justify-content:space-between; align-items:center; gap:12px; }
 .issue-title{ display:flex; flex-direction:column; gap:4px; }
@@ -196,6 +197,7 @@ pre{
 }
 .tag-red{ background:#ffe9e9; color:#b42318; border-color:#fda29b; }
 .tag-yellow{ background:#fff6db; color:#8a6100; border-color:#f6d27a; }
+.tag-green{ background:#e9f9ef; color:#117a37; border-color:#86efac; }
 
 .issue-section{ margin-top:12px; }
 .issue-k{ font-size:12px; font-weight:800; color:#334155; margin-bottom:6px; }
