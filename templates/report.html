@@ -17,7 +17,8 @@
 
     {% set high_count = findings_high|length %}
     {% set med_count  = findings_medium|length %}
-    {% set total_issues = high_count + med_count %}
+    {% set low_count  = findings_low|length %}
+    {% set total_issues = high_count + med_count + low_count %}
 
     {% if high_count >= 1 %}
       {% set risk_label = "High Risk" %}
@@ -61,7 +62,7 @@
 
       <div class="issues-found">
         <strong>{{ total_issues }} Issues Found</strong>
-        <span class="muted">(High: {{ high_count }} | Medium: {{ med_count }})</span>
+        <span class="muted">(Red: {{ high_count }} | Amber: {{ med_count }} | Green: {{ low_count }})</span>
       </div>
     </section>
 
@@ -76,13 +77,14 @@
 
       {% for f in findings %}
         {% set red = f.severity == "high" %}
-        <article class="issue {{ 'issue-red' if red else 'issue-yellow' }}">
+        {% set amber = f.severity == "medium" %}
+        <article class="issue {{ 'issue-red' if red else ('issue-yellow' if amber else 'issue-green') }}">
           <div class="issue-head">
             <div class="issue-title">
               <span class="issue-no">Issue #{{ loop.index }}</span>
               <span class="issue-name">{{ f.label }}</span>
             </div>
-            <span class="tag {{ 'tag-red' if red else 'tag-yellow' }}">{{ f.severity|upper }}</span>
+            <span class="tag {{ 'tag-red' if red else ('tag-yellow' if amber else 'tag-green') }}">{{ f.severity|upper }}</span>
           </div>
 
           <div class="issue-section">
