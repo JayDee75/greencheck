@@ -81,6 +81,18 @@ CLAIM_ACTION_HINT = re.compile(
     r"ons|notre|nuestro|unser|wij|nous|somos|ist)\b",
     re.I,
 )
+CLAIM_SUBJECT_HINT = re.compile(
+    r"\b(we|our|us|company|brand|business|group|product|products|service|services|solution|solutions|"
+    r"offering|offerings|packaging|this\s+product|this\s+service|ons|notre|nuestro|unser|wij|nous)\b",
+    re.I,
+)
+THIRD_PARTY_EXPLANATORY_CONTEXT = re.compile(
+    r"\b(ecovadis|b\s*corp(?:oration)?|bcorp|un\s+global\s+compact|iso\s*\d{3,5}|"
+    r"science\s+based\s+targets?\s+initiative|sbti|fairtrade|eu\s*ecolabel|"
+    r"ratings?|rating\s+framework|framework|methodolog(?:y|ie)|evaluation|assess(?:ment|ed)|"
+    r"third[-\s]?party|independent|certification\s+scheme)\b",
+    re.I,
+)
 
 
 @dataclass
@@ -395,7 +407,9 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
         if generic_match and COLOR_CONTEXT_HINT.search(chunk) and not CLAIM_ACTION_HINT.search(chunk):
             continue
 
-        if generic_match and not has_generic_substantiation and not has_absolute_claim:
+        has_claim_subject = bool(CLAIM_SUBJECT_HINT.search(chunk) or CLAIM_ACTION_HINT.search(chunk))
+        is_third_party_context = bool(THIRD_PARTY_EXPLANATORY_CONTEXT.search(chunk))
+        if generic_match and not has_generic_substantiation and not has_absolute_claim and has_claim_subject and not is_third_party_context:
             claim_text = generic_match.group(0)
             commercial_context = bool(re.search(r"\b(offerings?|services?|producten?|solutions?)\b", chunk, re.I))
             severity = "high" if commercial_context else "medium"
