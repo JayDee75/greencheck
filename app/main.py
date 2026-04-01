@@ -51,8 +51,14 @@ ABSOLUTE_CLAIMS = re.compile(
 OFFSET_HINT = re.compile(r"\b(offset|compensat|certificate|credit)\b", re.I)
 
 GENERIC_SUSTAINABILITY_CLAIM = re.compile(
-    r"\b(sustainable\s+future|more\s+sustainable\s+future|sustainable\s+hr|"
-    r"focus\s+on\s+sustainability|esg[-\s]?inspired|spark\s+a\s+sustainable\s+future)\b",
+    r"\b("
+    r"sustainable|conscious|responsible|environmentally\s+friendly|eco[-\s]?friendly|green|"
+    r"carbon\s+friendly|energy\s+efficient|carbon\s+neutral|climate\s+neutral|"
+    r"duurzaam|duurzame|milieuvriendelijk|ecologisch|groen|klimaatneutraal|co2[-\s]?neutraal|"
+    r"nachhaltig|umweltfreundlich|klimaneutral|ressourcenschonend|"
+    r"durable|responsable|respectueux\s+de\s+l[’']environnement|vert|neutre\s+en\s+carbone|"
+    r"sostenible|respetuoso\s+con\s+el\s+medio\s+ambiente|ecol[oó]gico|verde|neutro\s+en\s+carbono"
+    r")\b",
     re.I,
 )
 
@@ -64,6 +70,17 @@ GENERIC_SUBSTANTIATION_HINT = re.compile(
 )
 
 NON_MATERIAL_URL_HINT = re.compile(r"/(news|blog|events|careers|jobs|investors?)/", re.I)
+COLOR_CONTEXT_HINT = re.compile(
+    r"\b(color|colour|pantone|rgb|hex|palette|shirt|t-?shirt|dress|paint|"
+    r"kleur|couleur|farbe|camiseta|vestido|farbe)\b",
+    re.I,
+)
+CLAIM_ACTION_HINT = re.compile(
+    r"\b(our|we|product|service|solution|packaging|company|brand|"
+    r"100%|fully|made\s+with|designed\s+to|certified|verified|"
+    r"ons|notre|nuestro|unser|wij|nous|somos|ist)\b",
+    re.I,
+)
 
 
 @dataclass
@@ -77,9 +94,10 @@ class Finding:
 
 
 RULEBOOK = {
-    "MATERIAL_TARGET_CLAIM": "EmpCo Art. 5/6 — Een materiële klimaatdoelclaim moet onderbouwd zijn met scope, baseline, methodologie en voortgangsinformatie.",
-    "MATERIAL_ABSOLUTE_CLAIM": "EmpCo Art. 5 — Absolute claims (bv. net zero/carbon neutral) moeten duidelijk afgebakend en verifieerbaar zijn.",
-    "GENERIC_CLAIM": "EmpCo Art. 5/6 — Generieke duurzaamheidsclaims (bv. 'sustainable future') zijn misleidend zonder duidelijke, verifieerbare specificatie.",
+    "MATERIAL_TARGET_CLAIM": "Directive (EU) 2024/825 — UCPD art. 6(1) en art. 7(1): doelclaims moeten specifiek, verifieerbaar en niet-misleidend zijn.",
+    "MATERIAL_ABSOLUTE_CLAIM": "Directive (EU) 2024/825 — UCPD Annex I (nieuwe greenwashing-verboden) en art. 6(1): absolute claims vereisen duidelijke afbakening en bewijs.",
+    "GENERIC_CLAIM": "Directive (EU) 2024/825 — UCPD Annex I (generieke milieuclaims zonder erkende uitstekende milieuprestatie zijn verboden).",
+    "ECD_RESTRICTED_TERM": "Directive (EU) 2024/825 — controleer claim tegen aangepaste UCPD art. 6(1), art. 7(1) en Annex I (verboden greenwashing-praktijken).",
 }
 
 
@@ -309,7 +327,8 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
                 how_to_fix="Vermeld scope 1/2/3, baseline jaar, meetmethode, tussendoelen en publieke voortgangsrapportering.",
             )
 
-        if ABSOLUTE_CLAIMS.search(chunk):
+        has_absolute_claim = bool(ABSOLUTE_CLAIMS.search(chunk))
+        if has_absolute_claim:
             severity = "medium"
             offset_note = " Vermeld expliciet de rol van offsets/certificaten." if OFFSET_HINT.search(chunk) else ""
             message = (
@@ -329,7 +348,10 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
             )
 
         generic_match = GENERIC_SUSTAINABILITY_CLAIM.search(chunk)
-        if generic_match and not has_generic_substantiation:
+        if generic_match and COLOR_CONTEXT_HINT.search(chunk) and not CLAIM_ACTION_HINT.search(chunk):
+            continue
+
+        if generic_match and not has_generic_substantiation and not has_absolute_claim:
             claim_text = generic_match.group(0)
             commercial_context = bool(re.search(r"\b(offerings?|services?|producten?|solutions?)\b", chunk, re.I))
             severity = "high" if commercial_context else "medium"
@@ -343,6 +365,20 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
                 how_to_fix=(
                     "Vervang brede claim door concrete milieu-informatie (welke impact, voor welk onderdeel, welke meetmethode) "
                     "en link naar onafhankelijke verificatie of erkend keurmerk."
+                ),
+            )
+        elif generic_match:
+            claim_text = generic_match.group(0)
+            add_issue(
+                category="ECD_RESTRICTED_TERM",
+                severity="low",
+                message=(
+                    f"ECD-relevante term ('{claim_text}') gevonden met enige context/bewijs in de buurt; juridische verificatie aanbevolen."
+                ),
+                evidence=chunk,
+                how_to_fix=(
+                    "Valideer of de claim specifiek, verifieerbaar en niet misleidend is in de volledige commerciële context "
+                    "(inclusief productpagina, CTA en visuals)."
                 ),
             )
 
@@ -390,18 +426,21 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding]]:
         dedup[key] = finding
     findings = list(dedup.values())
 
-    findings.sort(key=lambda f: (0 if f.severity == "high" else 1, f.category, f.url))
+    severity_rank = {"high": 0, "medium": 1, "low": 2}
+    findings.sort(key=lambda f: (severity_rank.get(f.severity, 3), f.category, f.url))
 
     high_findings = [f for f in findings if f.severity == "high"][:5]
     medium_findings = [f for f in findings if f.severity == "medium"][:8]
+    low_findings = [f for f in findings if f.severity == "low"][:8]
 
-    return len(visited), high_findings + medium_findings
+    return len(visited), high_findings + medium_findings + low_findings
 
 
 def calc_risk_score(findings: List[Finding]) -> int:
     high = sum(1 for f in findings if f.severity == "high")
     medium = sum(1 for f in findings if f.severity == "medium")
-    return max(0, min(100, high * 25 + medium * 10))
+    low = sum(1 for f in findings if f.severity == "low")
+    return max(0, min(100, high * 25 + medium * 10 + low * 3))
 
 
 @app.get("/")
@@ -435,7 +474,7 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
                 f.url if readable_source else "Bronpagina URL onleesbaar (ongeldige of incoherente link in scanresultaat)."
             ),
             "message": f.message,
-            "rule": RULEBOOK.get(f.category, "EmpCo Art. 5 — Claim moet duidelijk, juist en verifieerbaar zijn."),
+            "rule": RULEBOOK.get(f.category, "Directive (EU) 2024/825 — claim moet duidelijk, juist en verifieerbaar zijn."),
             "recommendation": f.how_to_fix,
             "severity": f.severity,
         }
@@ -449,7 +488,7 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
         "findings": [to_template_finding(f) for f in findings_obj],
         "findings_high": [to_template_finding(f) for f in findings_obj if f.severity == "high"],
         "findings_medium": [to_template_finding(f) for f in findings_obj if f.severity == "medium"],
-        "findings_low": [],
+        "findings_low": [to_template_finding(f) for f in findings_obj if f.severity == "low"],
     }
 
     return templates.TemplateResponse("report.html", context)
