@@ -234,3 +234,27 @@ def test_intro_block_claim_is_evaluated_as_generic_environmental_candidate():
     assert generic
     assert "sustainable components" in generic[0].evidence.lower()
     assert "better future" in generic[0].evidence.lower()
+
+
+def test_hero_block_with_two_signal_groups_is_forced_into_generic_candidate_pipeline():
+    hero_block = (
+        "Building a more responsible digital future. "
+        "At Cegeka, we’re not just writing code. We’re writing a better future. "
+        "By embedding sustainable components into our solutions, we’re proving that digital innovation and ESG can go hand in hand."
+    )
+    findings = find_issues_on_page(
+        "https://example.com/esg",
+        "Unrelated footer teaser.",
+        hero_block=hero_block,
+        extraction_debug={
+            "main_title": "Building a more responsible digital future",
+            "first_paragraph_after_title": (
+                "At Cegeka, we’re not just writing code. We’re writing a better future. "
+                "By embedding sustainable components into our solutions, we’re proving that digital innovation and ESG can go hand in hand."
+            ),
+        },
+    )
+    generic = [f for f in findings if f.category == "GENERIC_ENVIRONMENTAL_CLAIMS"]
+    assert generic
+    assert "responsible digital future" in generic[0].evidence.lower()
+    assert "sustainable components" in generic[0].evidence.lower()
