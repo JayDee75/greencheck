@@ -3,7 +3,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.main import clean_snippet, find_issues_on_page
+from app.main import _extract_main_article_text, clean_snippet, find_issues_on_page
 
 
 def test_color_context_without_claim_is_ignored():
@@ -136,3 +136,40 @@ def test_tier5_false_positive_without_tier1_or_tier2_does_not_trigger_generic_de
         "Our strategy focuses on financial sustainability and long-term profitability.",
     )
     assert all(f.category != "GENERIC_ENVIRONMENTAL_CLAIMS" for f in findings)
+
+
+def test_main_article_extraction_prioritizes_intro_and_excludes_related_teasers():
+    html = """
+    <html><body>
+      <nav>Navigation content</nav>
+      <article class="blog-post">
+        <h1>Building a more responsible digital future</h1>
+        <p>At Cegeka, we’re not just writing code. We’re writing a better future. By embedding sustainable components into our solutions, we’re proving that digital innovation and ESG can go hand in hand.</p>
+        <p>Additional body content.</p>
+      </article>
+      <section class="related-articles">
+        <h2>Related Articles</h2>
+        <p>Accelerating to Zero Emission Cloud Services by 2030</p>
+        <p>Cegeka has set a bold target: by 2030, clients will have access to Cegeka’s zero emission cloud services.</p>
+      </section>
+      <footer>Footer content</footer>
+    </body></html>
+    """
+    extracted, debug = _extract_main_article_text(html)
+    assert "sustainable components" in extracted.lower()
+    assert "related articles" not in extracted.lower()
+    assert "zero emission cloud services" not in extracted.lower()
+    assert debug["intro_captured"] is True
+    assert debug["related_articles_excluded"] is True
+
+
+def test_intro_block_claim_is_evaluated_as_generic_environmental_candidate():
+    text = (
+        "Building a more responsible digital future\n"
+        "At Cegeka, we’re not just writing code. We’re writing a better future. By embedding sustainable components into our solutions, we’re proving that digital innovation and ESG can go hand in hand."
+    )
+    findings = find_issues_on_page("https://example.com/blog", text)
+    generic = [f for f in findings if f.category == "GENERIC_ENVIRONMENTAL_CLAIMS"]
+    assert generic
+    assert "sustainable components" in generic[0].evidence.lower()
+    assert "better future" in generic[0].evidence.lower()
