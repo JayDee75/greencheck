@@ -73,3 +73,24 @@ def test_press_page_navigation_context_is_not_flagged_as_generic_claim():
         'stay informed about our sustainable growth, ESG initiatives, and our continued journey as a European leader, helping 105,000 customers with their HR, pay & time.',
     )
     assert all(f.category != 'GENERIC_ENVIRONMENTAL_CLAIMS' for f in findings)
+
+
+def test_generic_claim_keeps_full_sentence_block_without_truncation():
+    text = (
+        "At Cegeka, we’re not just writing code. We’re writing a better future. "
+        "By embedding sustainable components into our solutions, we’re proving that digital innovation and ESG can go hand in hand."
+    )
+    findings = find_issues_on_page("https://example.com/esg", text)
+    generic = [f for f in findings if f.category == "GENERIC_ENVIRONMENTAL_CLAIMS"]
+    assert generic
+    assert generic[0].evidence == text
+
+
+def test_generic_claim_recommendation_mentions_scheme_certification_or_label():
+    findings = find_issues_on_page(
+        "https://example.com/services",
+        "We deliver sustainable components in all our solutions.",
+    )
+    generic = [f for f in findings if f.category == "GENERIC_ENVIRONMENTAL_CLAIMS"]
+    assert generic
+    assert "scheme, certification, or label" in generic[0].how_to_fix
