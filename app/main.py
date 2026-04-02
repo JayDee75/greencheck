@@ -141,6 +141,7 @@ HERO_ESG_SIGNAL = re.compile(
     r"\b(esg|environmental|environment|emissions?|climate|greener|lower[-\s]?impact|carbon)\b",
     re.I,
 )
+HERO_HARD_FALLBACK = re.compile(r"\b(sustainable|better\s+future|responsible|esg)\b", re.I)
 
 
 def is_asset_or_image_text(chunk: str) -> bool:
@@ -433,10 +434,10 @@ def _extract_main_article_text(html_doc: str) -> Tuple[str, Dict[str, object]]:
         related_sections_removed += 1
         wrapper.decompose()
 
-    title_node = best.find("h1") or best.find("h2")
-    title = title_node.get_text(" ", strip=True) if title_node else ""
+    title_node = best.find("h1") or soup.find("h1") or best.find("h2")
+    title = _normalize_block_text(title_node.get_text(" ", strip=True)) if title_node else ""
     intro = ""
-    hero_paragraphs: List[str] = []
+    first_intro_node = None
     if title_node:
         for intro_node in title_node.find_all_next("p"):
             if best not in intro_node.parents:
@@ -447,18 +448,19 @@ def _extract_main_article_text(html_doc: str) -> Tuple[str, Dict[str, object]]:
             intro_text = _normalize_block_text(intro_node.get_text(" ", strip=True))
             if len(intro_text) < 40:
                 continue
-            hero_paragraphs.append(intro_text)
-            if len(hero_paragraphs) >= 2:
-                break
-    if hero_paragraphs:
-        intro = hero_paragraphs[0]
-    hero_block = _normalize_block_text(" ".join([title] + hero_paragraphs))
+            intro = intro_text
+            first_intro_node = intro_node
+            break
+    hero_paragraphs: List[str] = [intro] if intro else []
+    hero_block = _normalize_block_text(" ".join(part for part in [title, intro] if part))
 
     blocks: List[str] = []
     for node in best.find_all(["h2", "h3", "p", "li"]):
         if _is_excluded_container(node):
             continue
         if any(_is_excluded_container(parent) for parent in node.parents if getattr(parent, "name", None)):
+            continue
+        if first_intro_node is not None and node == first_intro_node:
             continue
         text = node.get_text(" ", strip=True)
         if len(text) >= 25:
@@ -697,7 +699,8 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
         log_pipeline_event("block_extracted", block, tier2=sorted(signal["tier2"]))
     hero_signals = hero_signal_groups(normalized_hero_block) if normalized_hero_block else {}
     hero_group_count = sum(1 for values in hero_signals.values() if values) if normalized_hero_block else 0
-    hero_candidate_created = bool(normalized_hero_block and hero_group_count >= 2)
+    hero_hard_fallback_triggered = bool(normalized_hero_block and HERO_HARD_FALLBACK.search(normalized_hero_block))
+    hero_candidate_created = bool(normalized_hero_block and (hero_group_count >= 2 or hero_hard_fallback_triggered))
     log_pipeline_event(
         "hero_block_analysis",
         normalized_hero_block,
@@ -705,6 +708,7 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
         first_paragraph=(extraction_debug or {}).get("first_paragraph_after_title", ""),
         combined_hero_block=normalized_hero_block,
         signal_groups_matched={k: v for k, v in hero_signals.items() if v},
+        hard_fallback_triggered=hero_hard_fallback_triggered,
         candidate_created=hero_candidate_created,
     )
 
@@ -742,29 +746,37 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
     generic_candidate_filtered = False
 
     prioritized_chunks = chunks[:]
-    if hero_candidate_created and normalized_hero_block:
+    if normalized_hero_block:
         if normalized_hero_block not in prioritized_chunks:
             prioritized_chunks.insert(0, normalized_hero_block)
         else:
             prioritized_chunks = [normalized_hero_block] + [c for c in prioritized_chunks if c != normalized_hero_block]
+
+    pre_filter_candidates: List[str] = []
+    filtered_after_materiality: List[str] = []
 
     for chunk in prioritized_chunks:
         if is_asset_or_image_text(chunk):
             continue
         matching_blocks = [block for block, _ in block_signals if chunk in block or block in chunk]
         relevant_block = max(matching_blocks, key=len) if matching_blocks else _normalize_block_text(chunk)
+        pre_filter_candidates.append(relevant_block)
         taxonomy_signal = taxonomy_signal_for_block(relevant_block)
         tier2_candidate = bool(taxonomy_signal["tier2"])
         matched_groups = hero_signal_groups(relevant_block)
         matched_group_count = sum(1 for values in matched_groups.values() if values)
         signal_candidate = matched_group_count >= 2
+        is_hero_block = bool(normalized_hero_block and _normalize_block_text(relevant_block).lower() == normalized_hero_block.lower())
+        hard_hero_fallback_candidate = bool(is_hero_block and HERO_HARD_FALLBACK.search(relevant_block))
         fallback_candidate = bool(
             signal_candidate
             or ("sustainable components" in relevant_block.lower() or "better future" in relevant_block.lower())
+            or hard_hero_fallback_candidate
             or (SUSTAINABILITY_FALLBACK.search(relevant_block) and SUSTAINABILITY_FRAMING.search(relevant_block))
         )
-        if materiality_score(chunk, page_url) < 3 and not tier2_candidate and not fallback_candidate:
+        if materiality_score(chunk, page_url) < 3 and not tier2_candidate and not fallback_candidate and not is_hero_block:
             log_pipeline_event("filtered_materiality", relevant_block, tier2=tier2_candidate, fallback=fallback_candidate)
+            filtered_after_materiality.append(relevant_block)
             continue
         should_trigger_llm = bool(taxonomy_signal["trigger_llm"] or fallback_candidate)
         log_pipeline_event(
@@ -901,18 +913,33 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
         generic_candidate_created,
         generic_candidate_filtered,
     )
+    final_rendered_issues = [clean_snippet(issue.evidence) for issue in issues]
+    debug_payload = {
+        "extracted_h1": (extraction_debug or {}).get("main_title", ""),
+        "extracted_first_paragraph": (extraction_debug or {}).get("first_paragraph_after_title", ""),
+        "hero_block": normalized_hero_block,
+        "hero_candidate_created": hero_candidate_created,
+        "hero_hard_fallback_triggered": hero_hard_fallback_triggered,
+        "hero_raw_candidate": normalized_hero_block if hero_candidate_created else "",
+        "candidates_before_filtering": pre_filter_candidates,
+        "filtered_out_candidates_after_filtering": filtered_after_materiality,
+        "final_rendered_issues": final_rendered_issues,
+    }
+    if extraction_debug is not None:
+        extraction_debug["claim_pipeline_debug"] = debug_payload
+    LOGGER.warning("[pipeline:debug] %s", json.dumps(debug_payload, ensure_ascii=False))
     return issues
 
 
-def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding]]:
+def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], Dict[str, object]]:
     start_url = normalize_url(start_url)
     if not start_url:
-        return 0, []
+        return 0, [], {}
 
     session = requests.Session()
     html = fetch_html(start_url, session=session)
     if not html:
-        return 1, []
+        return 1, [], {}
     main_text, extraction_debug = _extract_main_article_text(html)
     if not main_text:
         main_text = html_to_text(html)
@@ -949,7 +976,7 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding]]:
 
     high_findings = [f for f in findings if f.severity == "high"][:5]
     medium_findings = [f for f in findings if f.severity == "medium"][:8]
-    return 1, high_findings + medium_findings
+    return 1, high_findings + medium_findings, extraction_debug
 
 
 def calc_risk_score(findings: List[Finding]) -> int:
@@ -975,7 +1002,7 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
         max_pages_int = 10
     max_pages_int = max(1, min(50, max_pages_int))
 
-    pages_scanned, findings_obj = scan_site(target, max_pages=max_pages_int)
+    pages_scanned, findings_obj, extraction_debug = scan_site(target, max_pages=max_pages_int)
     risk = calc_risk_score(findings_obj)
 
     def to_template_finding(f: Finding) -> dict:
@@ -1032,6 +1059,7 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
         "findings": [to_template_finding(f) for f in findings_obj],
         "findings_high": [to_template_finding(f) for f in findings_obj if f.severity == "high"],
         "findings_medium": [to_template_finding(f) for f in findings_obj if f.severity == "medium"],
+        "debug_data": extraction_debug.get("claim_pipeline_debug", {}),
     }
 
     return templates.TemplateResponse("report.html", context)

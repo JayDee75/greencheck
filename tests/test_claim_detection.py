@@ -258,3 +258,29 @@ def test_hero_block_with_two_signal_groups_is_forced_into_generic_candidate_pipe
     assert generic
     assert "responsible digital future" in generic[0].evidence.lower()
     assert "sustainable components" in generic[0].evidence.lower()
+
+
+def test_cegeka_hero_block_is_extracted_exactly_and_generates_candidate_debug():
+    html = """
+    <html><body>
+      <main>
+        <h1>Building a more responsible digital future</h1>
+        <p>At Cegeka, we’re not just writing code. We’re writing a better future. By embedding sustainable components into our solutions, we’re proving that digital innovation and ESG can go hand in hand.</p>
+        <p>Other body copy.</p>
+      </main>
+    </body></html>
+    """
+    extracted, debug = _extract_main_article_text(html)
+    expected = (
+        "Building a more responsible digital future At Cegeka, we’re not just writing code. "
+        "We’re writing a better future. By embedding sustainable components into our solutions, "
+        "we’re proving that digital innovation and ESG can go hand in hand."
+    )
+    assert debug["hero_block"] == expected
+
+    findings = find_issues_on_page("https://example.com/esg", extracted, hero_block=debug["hero_block"], extraction_debug=debug)
+    assert any(f.category == "GENERIC_ENVIRONMENTAL_CLAIMS" for f in findings)
+    claim_debug = debug["claim_pipeline_debug"]
+    assert claim_debug["hero_candidate_created"] is True
+    assert claim_debug["hero_hard_fallback_triggered"] is True
+    assert claim_debug["hero_block"] == expected
