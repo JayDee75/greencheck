@@ -107,6 +107,29 @@ def test_tier2_broad_sustainability_claim_triggers_generic_detection():
     assert "sustainable components" in generic[0].evidence.lower()
 
 
+def test_tier2_claim_with_connected_sentences_is_extracted_as_full_block():
+    text = (
+        "At Cegeka, we’re not just writing code.\n"
+        "We’re writing a better future.\n"
+        "By embedding sustainable components into our solutions, we’re proving that digital innovation and ESG can go hand in hand."
+    )
+    findings = find_issues_on_page("https://example.com/esg", text)
+    generic = [f for f in findings if f.category == "GENERIC_ENVIRONMENTAL_CLAIMS"]
+    assert generic
+    assert generic[0].evidence == (
+        "At Cegeka, we’re not just writing code. We’re writing a better future. "
+        "By embedding sustainable components into our solutions, we’re proving that digital innovation and ESG can go hand in hand."
+    )
+
+
+def test_tier2_wording_without_classic_environment_term_still_detected():
+    findings = find_issues_on_page(
+        "https://example.com/innovation",
+        "Responsible innovation creates a better future for our digital services.",
+    )
+    assert any(f.category == "GENERIC_ENVIRONMENTAL_CLAIMS" for f in findings)
+
+
 def test_tier5_false_positive_without_tier1_or_tier2_does_not_trigger_generic_detection():
     findings = find_issues_on_page(
         "https://example.com/investors",

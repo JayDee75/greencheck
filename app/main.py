@@ -175,9 +175,12 @@ LLM_TAXONOMY_PROMPT_GUIDANCE = (
     "The taxonomy is NOT exhaustive.\n"
     "You must also detect similar, equivalent, or derived expressions.\n\n"
     "Do not rely solely on exact keyword matches.\n"
-    "Detect both explicit environmental claims and broader sustainability-framed claims that imply environmental benefit.\n\n"
+    "Detect not only explicit environmental claims, but also broad sustainability-framed marketing language that states or "
+    "implies environmental benefit, environmental responsibility, or reduced environmental harm.\n\n"
+    "Treat wording such as 'sustainable components', 'better future', 'responsible innovation', or similar expressions as "
+    "potential generic environmental claims when they imply environmental benefit without clear and verifiable substantiation.\n\n"
     "If multiple connected sentences are needed to preserve the meaning of a claim, return the full sentence block.\n\n"
-    "Do not exclude claims simply because they are framed as ESG, innovation, or future-oriented messaging."
+    "Do not exclude a statement merely because it also refers to ESG, innovation, responsibility, or future-oriented messaging."
 )
 
 MARKETING_OR_DESCRIPTIVE_CONTEXT = re.compile(
@@ -367,6 +370,13 @@ def make_sentence_blocks(text: str) -> List[str]:
             window = " ".join(sentences[idx : idx + 2]).strip()
             if window:
                 blocks.append(window)
+            long_window = " ".join(sentences[idx : idx + 3]).strip()
+            if long_window:
+                blocks.append(long_window)
+    for idx in range(len(paragraphs)):
+        merged = " ".join(paragraphs[idx : idx + 3]).strip()
+        if merged:
+            blocks.append(merged)
     if not blocks and text.strip():
         blocks.append(text.strip())
     return blocks
@@ -389,7 +399,7 @@ def taxonomy_signal_for_block(block: str) -> Dict[str, object]:
     tier5 = _matched_taxonomy_keywords(normalized, "tier5_false_positive")
 
     in_marketing_context = bool(MARKETING_OR_DESCRIPTIVE_CONTEXT.search(block))
-    trigger_llm = bool(tier1) or (bool(tier2) and in_marketing_context)
+    trigger_llm = bool(tier1) or bool(tier2)
     if tier5 and not tier1 and not tier2:
         trigger_llm = False
 
@@ -482,11 +492,12 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
     for chunk in chunks:
         if is_asset_or_image_text(chunk):
             continue
-        if materiality_score(chunk, page_url) < 3:
-            continue
         matching_blocks = [block for block, _ in block_signals if chunk in block or block in chunk]
         relevant_block = max(matching_blocks, key=len) if matching_blocks else chunk
         taxonomy_signal = taxonomy_signal_for_block(relevant_block)
+        tier2_candidate = bool(taxonomy_signal["tier2"])
+        if materiality_score(chunk, page_url) < 3 and not tier2_candidate:
+            continue
         should_trigger_llm = bool(taxonomy_signal["trigger_llm"])
 
         target_match = MATERIAL_TARGET.search(chunk)
@@ -546,11 +557,13 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
             (generic_match or should_trigger_llm)
             and not has_generic_substantiation
             and not has_absolute_claim
-            and has_claim_subject
+            and (has_claim_subject or tier2_candidate)
             and not is_third_party_context
             and not (is_editorial_context and not commercial_context)
         ):
             claim_text = generic_match.group(0) if generic_match else "broad sustainability framing"
+            if not generic_match and taxonomy_signal["tier2"]:
+                claim_text = sorted(taxonomy_signal["tier2"])[0]
             severity = "high" if commercial_context else "medium"
             substantiation_context = ""
             if taxonomy_signal["tier4"]:
