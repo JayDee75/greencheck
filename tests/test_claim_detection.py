@@ -94,3 +94,22 @@ def test_generic_claim_recommendation_mentions_scheme_certification_or_label():
     generic = [f for f in findings if f.category == "GENERIC_ENVIRONMENTAL_CLAIMS"]
     assert generic
     assert "scheme, certification, or label" in generic[0].how_to_fix
+
+
+def test_tier2_broad_sustainability_claim_triggers_generic_detection():
+    findings = find_issues_on_page(
+        "https://example.com/esg",
+        "We are writing a better future by embedding sustainable components in our solutions.",
+    )
+    generic = [f for f in findings if f.category == "GENERIC_ENVIRONMENTAL_CLAIMS"]
+    assert generic
+    assert "better future" in generic[0].evidence.lower()
+    assert "sustainable components" in generic[0].evidence.lower()
+
+
+def test_tier5_false_positive_without_tier1_or_tier2_does_not_trigger_generic_detection():
+    findings = find_issues_on_page(
+        "https://example.com/investors",
+        "Our strategy focuses on financial sustainability and long-term profitability.",
+    )
+    assert all(f.category != "GENERIC_ENVIRONMENTAL_CLAIMS" for f in findings)

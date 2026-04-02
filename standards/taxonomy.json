@@ -1,0 +1,48 @@
+{
+  "tier1_direct_environmental": [
+    "green",
+    "eco",
+    "eco-friendly",
+    "environmentally friendly",
+    "climate friendly",
+    "carbon neutral",
+    "net zero",
+    "low impact",
+    "sustainable"
+  ],
+  "tier2_broad_sustainability": [
+    "better future",
+    "responsible innovation",
+    "sustainable components",
+    "future-proof",
+    "positive impact",
+    "responsible digital future",
+    "greener future"
+  ],
+  "tier3_context": [
+    "ESG",
+    "responsible",
+    "impact",
+    "innovation",
+    "future",
+    "purpose"
+  ],
+  "tier4_substantiation": [
+    "certified",
+    "label",
+    "scheme",
+    "ISO",
+    "SBTi",
+    "EcoVadis",
+    "EU Ecolabel",
+    "verified",
+    "LCA",
+    "data"
+  ],
+  "tier5_false_positive": [
+    "sustainable growth",
+    "financial sustainability",
+    "business continuity",
+    "long-term profitability"
+  ]
+}

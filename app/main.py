@@ -4,7 +4,8 @@ import html
 import json
 import re
 from dataclasses import dataclass
-from typing import List, Optional, Set, Tuple
+from pathlib import Path
+from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 import requests
@@ -122,6 +123,7 @@ class Finding:
     evidence: str
     severity: str
     how_to_fix: str
+    llm_prompt: str = ""
 
 
 SELF_MADE_LABEL = re.compile(
@@ -164,6 +166,58 @@ CATEGORY_LABELS = {
     "CARBON_NEUTRALITY_CLAIMS": "Carbon Neutrality Claim",
     "FUTURE_NET_ZERO_TARGETS": "Future Net Zero Target",
     "SUSTAINABILITY_LABELS": "Sustainability Label",
+}
+
+TAXONOMY_PATH = Path("standards/taxonomy.json")
+
+LLM_TAXONOMY_PROMPT_GUIDANCE = (
+    "Use the provided taxonomy as guidance for detecting environmental claims.\n\n"
+    "The taxonomy is NOT exhaustive.\n"
+    "You must also detect similar, equivalent, or derived expressions.\n\n"
+    "Do not rely solely on exact keyword matches.\n"
+    "Detect both explicit environmental claims and broader sustainability-framed claims that imply environmental benefit.\n\n"
+    "If multiple connected sentences are needed to preserve the meaning of a claim, return the full sentence block.\n\n"
+    "Do not exclude claims simply because they are framed as ESG, innovation, or future-oriented messaging."
+)
+
+MARKETING_OR_DESCRIPTIVE_CONTEXT = re.compile(
+    r"\b(we|our|company|brand|product|service|solution|offerings?|deliver|embedding|"
+    r"proving|designed|built|future|innovation|digital)\b",
+    re.I,
+)
+
+
+def load_taxonomy(path: Path = TAXONOMY_PATH) -> Dict[str, List[str]]:
+    default = {
+        "tier1_direct_environmental": [],
+        "tier2_broad_sustainability": [],
+        "tier3_context": [],
+        "tier4_substantiation": [],
+        "tier5_false_positive": [],
+    }
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+    for key in default:
+        values = payload.get(key, [])
+        default[key] = [str(v).strip() for v in values if str(v).strip()]
+    return default
+
+
+def _compile_keyword_patterns(keywords: List[str]) -> List[Tuple[str, re.Pattern[str]]]:
+    patterns: List[Tuple[str, re.Pattern[str]]] = []
+    for keyword in keywords:
+        escaped = re.escape(keyword)
+        pattern = re.compile(rf"(?<!\w){escaped}(?!\w)", re.I)
+        patterns.append((keyword.lower(), pattern))
+    return patterns
+
+
+TAXONOMY = load_taxonomy()
+TAXONOMY_PATTERNS = {
+    tier: _compile_keyword_patterns(words) for tier, words in TAXONOMY.items()
 }
 
 
@@ -301,6 +355,74 @@ def clean_snippet(s: str) -> str:
     return snippet
 
 
+def make_sentence_blocks(text: str) -> List[str]:
+    paragraphs = [p.strip() for p in re.split(r"\n+", text or "") if p.strip()]
+    blocks: List[str] = []
+    for paragraph in paragraphs:
+        blocks.append(paragraph)
+        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", paragraph) if s.strip()]
+        if len(sentences) <= 1:
+            continue
+        for idx in range(len(sentences)):
+            window = " ".join(sentences[idx : idx + 2]).strip()
+            if window:
+                blocks.append(window)
+    if not blocks and text.strip():
+        blocks.append(text.strip())
+    return blocks
+
+
+def _matched_taxonomy_keywords(text: str, tier: str) -> Set[str]:
+    matches: Set[str] = set()
+    for keyword, pattern in TAXONOMY_PATTERNS.get(tier, []):
+        if pattern.search(text):
+            matches.add(keyword)
+    return matches
+
+
+def taxonomy_signal_for_block(block: str) -> Dict[str, object]:
+    normalized = (block or "").lower()
+    tier1 = _matched_taxonomy_keywords(normalized, "tier1_direct_environmental")
+    tier2 = _matched_taxonomy_keywords(normalized, "tier2_broad_sustainability")
+    tier3 = _matched_taxonomy_keywords(normalized, "tier3_context")
+    tier4 = _matched_taxonomy_keywords(normalized, "tier4_substantiation")
+    tier5 = _matched_taxonomy_keywords(normalized, "tier5_false_positive")
+
+    in_marketing_context = bool(MARKETING_OR_DESCRIPTIVE_CONTEXT.search(block))
+    trigger_llm = bool(tier1) or (bool(tier2) and in_marketing_context)
+    if tier5 and not tier1 and not tier2:
+        trigger_llm = False
+
+    confidence = 1 if trigger_llm else 0
+    if (tier1 or tier2) and tier3:
+        confidence += 1
+
+    return {
+        "trigger_llm": trigger_llm,
+        "confidence": confidence,
+        "tier1": tier1,
+        "tier2": tier2,
+        "tier3": tier3,
+        "tier4": tier4,
+        "tier5": tier5,
+        "marketing_context": in_marketing_context,
+    }
+
+
+def build_llm_prompt(claim_block: str, signal: Dict[str, object]) -> str:
+    return (
+        f"{LLM_TAXONOMY_PROMPT_GUIDANCE}\n\n"
+        f"Claim block:\n{claim_block}\n\n"
+        f"Taxonomy context: "
+        f"tier1={sorted(signal.get('tier1', []))}, "
+        f"tier2={sorted(signal.get('tier2', []))}, "
+        f"tier3={sorted(signal.get('tier3', []))}, "
+        f"tier4={sorted(signal.get('tier4', []))}, "
+        f"tier5={sorted(signal.get('tier5', []))}, "
+        f"confidence={signal.get('confidence', 0)}."
+    )
+
+
 def materiality_score(chunk: str, page_url: str) -> int:
     score = 0
     if CLIMATE_CONTEXT.search(chunk):
@@ -324,13 +446,22 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
     chunks = make_chunks(text)
     if not chunks:
         return []
+    sentence_blocks = make_sentence_blocks(text)
+    block_signals = [(block, taxonomy_signal_for_block(block)) for block in sentence_blocks]
 
     has_plan_substantiation = bool(PLAN_SUBSTANTIATION.search(text))
     has_generic_substantiation = bool(GENERIC_SUBSTANTIATION_HINT.search(text))
     issues: List[Finding] = []
     seen: Set[Tuple[str, str]] = set()
 
-    def add_issue(category: str, severity: str, message: str, evidence: str, how_to_fix: str) -> None:
+    def add_issue(
+        category: str,
+        severity: str,
+        message: str,
+        evidence: str,
+        how_to_fix: str,
+        llm_prompt: str = "",
+    ) -> None:
         normalized = re.sub(r"\s+", " ", evidence.lower()).strip()
         key = (category, normalized)
         if key in seen:
@@ -344,6 +475,7 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
                 evidence=evidence.strip(),
                 severity=severity,
                 how_to_fix=how_to_fix,
+                llm_prompt=llm_prompt,
             )
         )
 
@@ -352,6 +484,10 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
             continue
         if materiality_score(chunk, page_url) < 3:
             continue
+        matching_blocks = [block for block, _ in block_signals if chunk in block or block in chunk]
+        relevant_block = max(matching_blocks, key=len) if matching_blocks else chunk
+        taxonomy_signal = taxonomy_signal_for_block(relevant_block)
+        should_trigger_llm = bool(taxonomy_signal["trigger_llm"])
 
         target_match = MATERIAL_TARGET.search(chunk)
         if target_match:
@@ -374,6 +510,7 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
                     "a baseline year, interim yearly or multi-year milestones, investment and execution measures, and a transparent "
                     "monitoring method with independent verification."
                 ),
+                llm_prompt=build_llm_prompt(relevant_block, taxonomy_signal),
             )
 
         has_absolute_claim = bool(ABSOLUTE_CLAIMS.search(chunk))
@@ -394,6 +531,7 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
                     "contribution statements, state emissions boundaries, disclose residual emissions, and present independently "
                     "verifiable methodology and assurance details."
                 ),
+                llm_prompt=build_llm_prompt(relevant_block, taxonomy_signal),
             )
 
         generic_match = GENERIC_SUSTAINABILITY_CLAIM.search(chunk)
@@ -405,22 +543,29 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
         commercial_context = bool(re.search(r"\b(offerings?|services?|producten?|solutions?)\b", chunk, re.I))
         is_editorial_context = bool(INFO_EDITORIAL_URL_HINT.search(page_url) or INFO_EDITORIAL_TEXT_HINT.search(chunk))
         if (
-            generic_match
+            (generic_match or should_trigger_llm)
             and not has_generic_substantiation
             and not has_absolute_claim
             and has_claim_subject
             and not is_third_party_context
             and not (is_editorial_context and not commercial_context)
         ):
-            claim_text = generic_match.group(0)
+            claim_text = generic_match.group(0) if generic_match else "broad sustainability framing"
             severity = "high" if commercial_context else "medium"
+            substantiation_context = ""
+            if taxonomy_signal["tier4"]:
+                substantiation_context = (
+                    f" Substantiation-related terms are present ({', '.join(sorted(taxonomy_signal['tier4']))}) "
+                    "and are passed for legal interpretation rather than treated as automatic risk reduction."
+                )
             add_issue(
                 category="GENERIC_ENVIRONMENTAL_CLAIMS",
                 severity=severity,
                 message=(
                     f"Generic environmental wording ('{claim_text}') is used without specific, measurable, and verifiable performance details."
+                    f"{substantiation_context}"
                 ),
-                evidence=clean_snippet(chunk),
+                evidence=clean_snippet(relevant_block),
                 how_to_fix=(
                     "Recommendations and advice: Replace the generic wording with specific, measurable and verifiable statements "
                     "(state the environmental impact addressed, baseline, scope, metric, and achieved result). If certification is "
@@ -428,6 +573,7 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
                     "standards, EcoVadis, or EU Ecolabel). If no such substantiation exists, rewrite the claim to avoid broad "
                     "environmental benefit language."
                 ),
+                llm_prompt=build_llm_prompt(relevant_block, taxonomy_signal),
             )
 
         label_match = SELF_MADE_LABEL.search(chunk)
@@ -441,6 +587,7 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
                     "Recommendations and advice: Replace self-made sustainability badges with recognised third-party certification "
                     "references where applicable, and provide clear criteria, governance, and verification details."
                 ),
+                llm_prompt=build_llm_prompt(relevant_block, taxonomy_signal),
             )
 
     return issues
@@ -510,8 +657,15 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
                     if match.group(0).strip()
                 }
             )
+            detected_keywords.extend(
+                sorted(
+                    _matched_taxonomy_keywords(f.evidence.lower(), "tier2_broad_sustainability")
+                    | _matched_taxonomy_keywords(f.evidence.lower(), "tier1_direct_environmental")
+                )
+            )
             if "sustainable components" in f.evidence.lower():
                 detected_keywords.insert(0, "sustainable components")
+            detected_keywords = sorted(dict.fromkeys(detected_keywords))
             if detected_keywords:
                 repeated_keywords = ", ".join(detected_keywords)
                 rule_text = (
