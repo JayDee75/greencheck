@@ -110,12 +110,13 @@ INFO_EDITORIAL_TEXT_HINT = re.compile(
     re.I,
 )
 EXCLUDED_SECTION_HINT = re.compile(
-    r"(related|read[-_\s]?next|more[-_\s]?articles?|suggested|teaser|promo|footer|breadcrumb|"
-    r"newsletter|menu|navigation|cross[-_\s]?link)",
+    r"(related|read[-_\s]?next|read[-_\s]?more|more[-_\s]?articles?|suggested|recommended|"
+    r"teaser|promo|footer|breadcrumb|newsletter|menu|navigation|cross[-_\s]?link|card|widget)",
     re.I,
 )
 EXCLUDED_HEADING_TEXT_HINT = re.compile(
-    r"\b(related articles?|recommended|suggested|read more|you may also like|more stories)\b",
+    r"\b(related articles?|more articles?|read more|suggested content|recommended reading|"
+    r"recommended|suggested|you may also like|more stories)\b",
     re.I,
 )
 MAIN_CONTAINER_HINT = re.compile(
@@ -191,10 +192,11 @@ LLM_TAXONOMY_PROMPT_GUIDANCE = (
     "Do not rely solely on exact keyword matches.\n"
     "Detect not only explicit environmental claims, but also broad sustainability-framed marketing language that states or "
     "implies environmental benefit, environmental responsibility, or reduced environmental harm.\n\n"
-    "Treat wording such as 'sustainable components', 'better future', 'responsible innovation', or similar expressions as "
-    "potential generic environmental claims when they imply environmental benefit without clear and verifiable substantiation.\n\n"
+    "Treat wording such as 'sustainable components', 'better future', 'responsible innovation', 'sustainable solutions', or "
+    "similar expressions as potential generic environmental claims when they imply environmental benefit without clear, specific, "
+    "and verifiable substantiation.\n\n"
     "If multiple connected sentences are needed to preserve the meaning of a claim, return the full sentence block.\n\n"
-    "Do not exclude a statement merely because it also refers to ESG, innovation, responsibility, or future-oriented messaging."
+    "Do not exclude a statement merely because it also refers to ESG, innovation, or future-oriented messaging."
 )
 
 MARKETING_OR_DESCRIPTIVE_CONTEXT = re.compile(
@@ -362,9 +364,17 @@ def _is_excluded_container(node) -> bool:
     hint_text = _node_hint_text(node)
     if EXCLUDED_SECTION_HINT.search(hint_text):
         return True
-    heading = node.find(["h1", "h2", "h3", "h4"])
+    heading = node.find(["h1", "h2", "h3", "h4"], recursive=False)
     heading_text = heading.get_text(" ", strip=True) if heading else ""
     return bool(EXCLUDED_HEADING_TEXT_HINT.search(heading_text))
+
+
+def _is_related_heading_node(node) -> bool:
+    if not getattr(node, "name", None):
+        return False
+    if node.name not in {"h1", "h2", "h3", "h4", "h5", "h6"}:
+        return False
+    return bool(EXCLUDED_HEADING_TEXT_HINT.search(node.get_text(" ", strip=True)))
 
 
 def _extract_main_article_text(html_doc: str) -> Tuple[str, Dict[str, object]]:
@@ -394,6 +404,16 @@ def _extract_main_article_text(html_doc: str) -> Tuple[str, Dict[str, object]]:
             candidates.append((text_len + heading_score + para_score, node))
 
     best = max(candidates, key=lambda item: item[0])[1] if candidates else soup.body or soup
+
+    related_sections_removed = 0
+    for heading in list(best.find_all(_is_related_heading_node)):
+        wrapper = heading.find_parent(["section", "div", "aside", "ul", "ol"]) or heading.parent
+        if wrapper is None or wrapper == best:
+            continue
+        if best not in wrapper.parents:
+            continue
+        related_sections_removed += 1
+        wrapper.decompose()
 
     title_node = best.find("h1") or best.find("h2")
     title = title_node.get_text(" ", strip=True) if title_node else ""
@@ -442,7 +462,8 @@ def _extract_main_article_text(html_doc: str) -> Tuple[str, Dict[str, object]]:
         "intro_captured": bool(intro),
         "found_sustainable_components": "sustainable components" in main_lower,
         "found_better_future": "better future" in main_lower,
-        "related_articles_excluded": related_excluded,
+        "related_articles_excluded": bool(related_excluded or related_sections_removed),
+        "related_sections_removed": related_sections_removed,
     }
     return main_text, debug
 
