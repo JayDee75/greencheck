@@ -3,11 +3,9 @@ from __future__ import annotations
 import html
 import json
 import re
-import time
-from collections import deque
 from dataclasses import dataclass
 from typing import List, Optional, Set, Tuple
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -142,8 +140,10 @@ OFFICIAL_LABEL_HINT = re.compile(
 
 RULEBOOK = {
     "GENERIC_ENVIRONMENTAL_CLAIMS": (
-        "Detected Rule Violation: This is a generic environmental claim used as a marketing-style statement "
-        "without clear, specific, and verifiable environmental performance information."
+        "Detected Rule Violation: This is a generic environmental claim under Directive (EU) 2024/825. "
+        "A generic environmental claim is a broad, non-specific environmental benefit statement that is not "
+        "supported by clear, specific, and verifiable substantiation. The wording risks misleading consumers "
+        "because the claim does not identify a concrete environmental aspect, metric, scope, or evidence base."
     ),
     "CARBON_NEUTRALITY_CLAIMS": (
         "Detected Rule Violation: This is a product/service-level carbon neutrality style claim presented without a clear, "
@@ -176,13 +176,6 @@ def normalize_url(u: str) -> str:
     return u
 
 
-def same_domain(a: str, b: str) -> bool:
-    try:
-        return urlparse(a).netloc.lower() == urlparse(b).netloc.lower()
-    except Exception:
-        return False
-
-
 def fetch_html(url: str, session: requests.Session, timeout: int = 18) -> Optional[str]:
     headers = {
         "User-Agent": "Durably-GreenCheck/2.0 (+https://durably.eu)",
@@ -198,23 +191,6 @@ def fetch_html(url: str, session: requests.Session, timeout: int = 18) -> Option
         return r.text
     except Exception:
         return None
-
-
-def extract_links(base_url: str, html: str) -> List[str]:
-    soup = BeautifulSoup(html, "html.parser")
-    links: List[str] = []
-    for a in soup.find_all("a", href=True):
-        href = (a.get("href") or "").strip()
-        if not href:
-            continue
-        if href.startswith(("#", "mailto:", "tel:", "javascript:")):
-            continue
-        candidate = urljoin(base_url, href).split("#")[0].strip()
-        parsed = urlparse(candidate)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            continue
-        links.append(candidate)
-    return links
 
 
 def is_readable_http_url(url: str) -> bool:
@@ -297,10 +273,8 @@ def make_chunks(text: str) -> List[str]:
         line = line.strip()
         if not line:
             continue
-        for part in re.split(r"(?<=[\.!?])\s+|;\s+|\|\s+", line):
-            part = part.strip()
-            if len(part) >= 25:
-                lines.append(part)
+        if len(line) >= 25:
+            lines.append(line)
 
     unique_lines: List[str] = []
     seen = set()
@@ -316,13 +290,6 @@ def make_chunks(text: str) -> List[str]:
 
     fallback = re.sub(r"\s+", " ", normalized).strip()
     return [fallback] if len(fallback) >= 25 else []
-
-
-def clip(s: str, n: int = 280) -> str:
-    s = (s or "").strip()
-    if len(s) <= n:
-        return s
-    return s[: n - 1].rstrip() + "…"
 
 
 def clean_snippet(s: str) -> str:
@@ -374,7 +341,7 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
                 category=category,
                 url=page_url,
                 message=message,
-                evidence=clip(evidence),
+                evidence=evidence.strip(),
                 severity=severity,
                 how_to_fix=how_to_fix,
             )
@@ -457,7 +424,9 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
                 how_to_fix=(
                     "Recommendations and advice: Replace the generic wording with specific, measurable and verifiable statements "
                     "(state the environmental impact addressed, baseline, scope, metric, and achieved result). If certification is "
-                    "relied upon, reference a recognised independent scheme; otherwise clearly qualify the claim."
+                    "relied upon, reference a recognised independent scheme, certification, or label (for example SBTi, relevant ISO "
+                    "standards, EcoVadis, or EU Ecolabel). If no such substantiation exists, rewrite the claim to avoid broad "
+                    "environmental benefit language."
                 ),
             )
 
@@ -482,34 +451,12 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding]]:
     if not start_url:
         return 0, []
 
-    visited: Set[str] = set()
-    queue: deque[str] = deque([start_url])
     session = requests.Session()
-
-    all_findings: List[Finding] = []
-
-    while queue and len(visited) < max_pages:
-        url = queue.popleft()
-        if url in visited or not same_domain(start_url, url):
-            continue
-
-        html = fetch_html(url, session=session)
-        visited.add(url)
-        if not html:
-            continue
-
-        links = extract_links(url, html)
-        prioritized = sorted(
-            links,
-            key=lambda link: 0 if re.search(r"sustain|esg|climate|environment|duurzaam|impact", link, re.I) else 1,
-        )
-        for link in prioritized:
-            if link not in visited and same_domain(start_url, link):
-                queue.append(link)
-
-        text = html_to_text(html)
-        all_findings.extend(find_issues_on_page(url, text))
-        time.sleep(0.12)
+    html = fetch_html(start_url, session=session)
+    if not html:
+        return 1, []
+    text = html_to_text(html)
+    all_findings: List[Finding] = find_issues_on_page(start_url, text)
 
     dedup = {}
     for finding in all_findings:
@@ -523,7 +470,7 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding]]:
 
     high_findings = [f for f in findings if f.severity == "high"][:5]
     medium_findings = [f for f in findings if f.severity == "medium"][:8]
-    return len(visited), high_findings + medium_findings
+    return 1, high_findings + medium_findings
 
 
 def calc_risk_score(findings: List[Finding]) -> int:
@@ -554,6 +501,23 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
 
     def to_template_finding(f: Finding) -> dict:
         readable_source = is_readable_http_url(f.url)
+        rule_text = RULEBOOK.get(f.category, "Detected Rule Violation: The claim is not sufficiently clear, accurate, and verifiable.")
+        if f.category == "GENERIC_ENVIRONMENTAL_CLAIMS":
+            detected_keywords = sorted(
+                {
+                    match.group(0).strip().lower()
+                    for match in GENERIC_SUSTAINABILITY_CLAIM.finditer(f.evidence)
+                    if match.group(0).strip()
+                }
+            )
+            if "sustainable components" in f.evidence.lower():
+                detected_keywords.insert(0, "sustainable components")
+            if detected_keywords:
+                repeated_keywords = ", ".join(detected_keywords)
+                rule_text = (
+                    f"{rule_text} Problematic keywords detected: \"{repeated_keywords}\". "
+                    f"Repeat and verify these keywords with substantiation: \"{repeated_keywords}\"."
+                )
         return {
             "label": CATEGORY_LABELS.get(f.category, f.category.replace("_", " ").title()),
             "snippet": f.evidence,
@@ -563,7 +527,7 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
                 f.url if readable_source else "Source page URL unreadable (invalid or incoherent link in scan result)."
             ),
             "message": f.message,
-            "rule": RULEBOOK.get(f.category, "Detected Rule Violation: The claim is not sufficiently clear, accurate, and verifiable."),
+            "rule": rule_text,
             "recommendation": f.how_to_fix,
             "severity": f.severity,
         }
