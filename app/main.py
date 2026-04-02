@@ -124,6 +124,24 @@ MAIN_CONTAINER_HINT = re.compile(
     re.I,
 )
 
+HERO_SUSTAINABILITY_SIGNAL = re.compile(
+    r"\b(sustainable|sustainability|responsible|responsibility|better\s+future|positive\s+impact|"
+    r"future[-\s]?proof|duurza+am|milieuvriendelijk)\b",
+    re.I,
+)
+HERO_SOLUTION_SIGNAL = re.compile(
+    r"\b(solution|solutions|service|services|product|products|technology|innovation|digital|platform)\b",
+    re.I,
+)
+HERO_BENEFIT_SIGNAL = re.compile(
+    r"\b(proving|helping|improving|reducing|enabling|driving|building|advancing|transforming)\b",
+    re.I,
+)
+HERO_ESG_SIGNAL = re.compile(
+    r"\b(esg|environmental|environment|emissions?|climate|greener|lower[-\s]?impact|carbon)\b",
+    re.I,
+)
+
 
 def is_asset_or_image_text(chunk: str) -> bool:
     normalized = (chunk or "").strip()
@@ -418,6 +436,7 @@ def _extract_main_article_text(html_doc: str) -> Tuple[str, Dict[str, object]]:
     title_node = best.find("h1") or best.find("h2")
     title = title_node.get_text(" ", strip=True) if title_node else ""
     intro = ""
+    hero_paragraphs: List[str] = []
     if title_node:
         for intro_node in title_node.find_all_next("p"):
             if best not in intro_node.parents:
@@ -428,8 +447,12 @@ def _extract_main_article_text(html_doc: str) -> Tuple[str, Dict[str, object]]:
             intro_text = _normalize_block_text(intro_node.get_text(" ", strip=True))
             if len(intro_text) < 40:
                 continue
-            intro = intro_text
-            break
+            hero_paragraphs.append(intro_text)
+            if len(hero_paragraphs) >= 2:
+                break
+    if hero_paragraphs:
+        intro = hero_paragraphs[0]
+    hero_block = _normalize_block_text(" ".join([title] + hero_paragraphs))
 
     blocks: List[str] = []
     for node in best.find_all(["h2", "h3", "p", "li"]):
@@ -459,6 +482,8 @@ def _extract_main_article_text(html_doc: str) -> Tuple[str, Dict[str, object]]:
         "main_content_length": len(main_text),
         "main_title": title,
         "first_paragraph_after_title": intro,
+        "hero_intro_paragraphs": hero_paragraphs,
+        "hero_block": hero_block,
         "intro_captured": bool(intro),
         "found_sustainable_components": "sustainable components" in main_lower,
         "found_better_future": "better future" in main_lower,
@@ -540,10 +565,24 @@ def _normalize_block_text(block: str) -> str:
     return re.sub(r"\s+", " ", (block or "")).strip()
 
 
-def _candidate_blocks(text: str) -> List[str]:
+def hero_signal_groups(block: str) -> Dict[str, List[str]]:
+    groups = {
+        "A_sustainability_responsibility": sorted(set(m.group(0).lower() for m in HERO_SUSTAINABILITY_SIGNAL.finditer(block))),
+        "B_solution_service_innovation": sorted(set(m.group(0).lower() for m in HERO_SOLUTION_SIGNAL.finditer(block))),
+        "C_benefit_improvement": sorted(set(m.group(0).lower() for m in HERO_BENEFIT_SIGNAL.finditer(block))),
+        "D_esg_environment_context": sorted(set(m.group(0).lower() for m in HERO_ESG_SIGNAL.finditer(block))),
+    }
+    return groups
+
+
+def _candidate_blocks(text: str, hero_block: str = "") -> List[str]:
     raw_blocks = make_sentence_blocks(text)
     ordered: List[str] = []
     seen: Set[str] = set()
+    normalized_hero_block = _normalize_block_text(hero_block)
+    if len(normalized_hero_block) >= 25:
+        ordered.append(normalized_hero_block)
+        seen.add(normalized_hero_block.lower())
     for block in raw_blocks:
         normalized = _normalize_block_text(block)
         if len(normalized) < 25:
@@ -553,25 +592,12 @@ def _candidate_blocks(text: str) -> List[str]:
             continue
         seen.add(key)
         ordered.append(normalized)
-    lower_text = (text or "").lower()
-    forced_claim_block_added = False
-    if "sustainable components" in lower_text or "better future" in lower_text:
-        for block in raw_blocks:
-            normalized = _normalize_block_text(block)
-            lower_block = normalized.lower()
-            if "sustainable components" in lower_block or "better future" in lower_block:
-                forced_claim_block_added = True
-                if normalized.lower() not in seen:
-                    ordered.insert(0, normalized)
-                    seen.add(normalized.lower())
-                else:
-                    ordered.remove(normalized)
-                    ordered.insert(0, normalized)
-                break
+    forced_claim_block_added = bool(normalized_hero_block)
     log_pipeline_event(
         "candidate_block_build",
         ordered[0] if ordered else "",
         forced_claim_block_added=forced_claim_block_added,
+        hero_block_present=bool(normalized_hero_block),
         candidate_count=len(ordered),
     )
     return ordered
@@ -581,9 +607,12 @@ def _claim_priority(block: str) -> int:
     lower = block.lower()
     if "sustainable components" in lower or "better future" in lower:
         return 0
-    if len(lower) > 140:
+    signal_groups = hero_signal_groups(block)
+    if sum(1 for values in signal_groups.values() if values) >= 2:
         return 1
-    return 2
+    if len(lower) > 140:
+        return 2
+    return 3
 
 
 def _matched_taxonomy_keywords(text: str, tier: str) -> Set[str]:
@@ -656,15 +685,28 @@ def materiality_score(chunk: str, page_url: str) -> int:
     return score
 
 
-def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
+def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extraction_debug: Optional[Dict[str, object]] = None) -> List[Finding]:
     chunks = make_chunks(text)
-    candidate_blocks = _candidate_blocks(text)
+    normalized_hero_block = _normalize_block_text(hero_block)
+    candidate_blocks = _candidate_blocks(text, hero_block=normalized_hero_block)
     if not chunks and not candidate_blocks:
         return []
     candidate_blocks = sorted(candidate_blocks, key=_claim_priority)
     block_signals = [(block, taxonomy_signal_for_block(block)) for block in candidate_blocks]
     for block, signal in block_signals:
         log_pipeline_event("block_extracted", block, tier2=sorted(signal["tier2"]))
+    hero_signals = hero_signal_groups(normalized_hero_block) if normalized_hero_block else {}
+    hero_group_count = sum(1 for values in hero_signals.values() if values) if normalized_hero_block else 0
+    hero_candidate_created = bool(normalized_hero_block and hero_group_count >= 2)
+    log_pipeline_event(
+        "hero_block_analysis",
+        normalized_hero_block,
+        extracted_h1=(extraction_debug or {}).get("main_title", ""),
+        first_paragraph=(extraction_debug or {}).get("first_paragraph_after_title", ""),
+        combined_hero_block=normalized_hero_block,
+        signal_groups_matched={k: v for k, v in hero_signals.items() if v},
+        candidate_created=hero_candidate_created,
+    )
 
     has_plan_substantiation = bool(PLAN_SUBSTANTIATION.search(text))
     has_generic_substantiation = bool(GENERIC_SUBSTANTIATION_HINT.search(text))
@@ -699,15 +741,26 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
     generic_candidate_created = False
     generic_candidate_filtered = False
 
-    for chunk in chunks:
+    prioritized_chunks = chunks[:]
+    if hero_candidate_created and normalized_hero_block:
+        if normalized_hero_block not in prioritized_chunks:
+            prioritized_chunks.insert(0, normalized_hero_block)
+        else:
+            prioritized_chunks = [normalized_hero_block] + [c for c in prioritized_chunks if c != normalized_hero_block]
+
+    for chunk in prioritized_chunks:
         if is_asset_or_image_text(chunk):
             continue
         matching_blocks = [block for block, _ in block_signals if chunk in block or block in chunk]
         relevant_block = max(matching_blocks, key=len) if matching_blocks else _normalize_block_text(chunk)
         taxonomy_signal = taxonomy_signal_for_block(relevant_block)
         tier2_candidate = bool(taxonomy_signal["tier2"])
+        matched_groups = hero_signal_groups(relevant_block)
+        matched_group_count = sum(1 for values in matched_groups.values() if values)
+        signal_candidate = matched_group_count >= 2
         fallback_candidate = bool(
-            ("sustainable components" in relevant_block.lower() or "better future" in relevant_block.lower())
+            signal_candidate
+            or ("sustainable components" in relevant_block.lower() or "better future" in relevant_block.lower())
             or (SUSTAINABILITY_FALLBACK.search(relevant_block) and SUSTAINABILITY_FRAMING.search(relevant_block))
         )
         if materiality_score(chunk, page_url) < 3 and not tier2_candidate and not fallback_candidate:
@@ -718,6 +771,8 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
             "candidate_selected",
             relevant_block,
             tier2=tier2_candidate,
+            signal_groups={k: v for k, v in matched_groups.items() if v},
+            signal_group_count=matched_group_count,
             fallback=fallback_candidate,
             trigger_llm=should_trigger_llm,
         )
@@ -875,7 +930,12 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding]]:
         extraction_debug.get("related_articles_excluded"),
     )
     text = main_text
-    all_findings: List[Finding] = find_issues_on_page(start_url, text)
+    all_findings: List[Finding] = find_issues_on_page(
+        start_url,
+        text,
+        hero_block=str(extraction_debug.get("hero_block", "") or ""),
+        extraction_debug=extraction_debug,
+    )
 
     dedup = {}
     for finding in all_findings:
@@ -935,6 +995,9 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
                     | _matched_taxonomy_keywords(f.evidence.lower(), "tier1_direct_environmental")
                 )
             )
+            for phrase in ["responsible digital future", "better future", "sustainable components", "sustainable solutions"]:
+                if phrase in f.evidence.lower():
+                    detected_keywords.insert(0, phrase)
             if "sustainable components" in f.evidence.lower():
                 detected_keywords.insert(0, "sustainable components")
             if "better future" in f.evidence.lower():
