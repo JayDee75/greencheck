@@ -182,6 +182,48 @@ def test_related_articles_heading_inside_main_container_is_excluded():
     assert "accelerating to zero emission cloud services by 2030" not in extracted.lower()
 
 
+def test_main_container_is_not_excluded_by_nested_related_heading():
+    html = """
+    <html><body>
+      <main class="article-main">
+        <h1>Building a more responsible digital future</h1>
+        <p>At Cegeka, we’re not just writing code. We’re writing a better future. By embedding sustainable components into our solutions, we’re proving that digital innovation and ESG can go hand in hand.</p>
+        <div class="sidebar-slot">
+          <section>
+            <h3>Related Articles</h3>
+            <p>Accelerating to Zero Emission Cloud Services by 2030</p>
+          </section>
+        </div>
+      </main>
+    </body></html>
+    """
+    extracted, debug = _extract_main_article_text(html)
+    assert "building a more responsible digital future" in extracted.lower()
+    assert "sustainable components" in extracted.lower()
+    assert "zero emission cloud services" not in extracted.lower()
+    assert debug["intro_captured"] is True
+    assert debug["related_articles_excluded"] is True
+
+
+def test_recommended_reading_section_is_excluded_from_primary_extraction():
+    html = """
+    <html><body>
+      <article>
+        <h1>Building a more responsible digital future</h1>
+        <p>At Cegeka, we’re not just writing code. We’re writing a better future. By embedding sustainable components into our solutions, we’re proving that digital innovation and ESG can go hand in hand.</p>
+        <section class="recommendation-widget">
+          <h2>Recommended Reading</h2>
+          <p>Accelerating to Zero Emission Cloud Services by 2030</p>
+        </section>
+      </article>
+    </body></html>
+    """
+    extracted, _ = _extract_main_article_text(html)
+    assert "sustainable components" in extracted.lower()
+    assert "recommended reading" not in extracted.lower()
+    assert "zero emission cloud services" not in extracted.lower()
+
+
 def test_intro_block_claim_is_evaluated_as_generic_environmental_candidate():
     text = (
         "Building a more responsible digital future\n"
