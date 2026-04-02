@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -188,6 +189,22 @@ MARKETING_OR_DESCRIPTIVE_CONTEXT = re.compile(
     r"proving|designed|built|future|innovation|digital)\b",
     re.I,
 )
+
+SUSTAINABILITY_FALLBACK = re.compile(r"\b(sustainable|sustainability)\b", re.I)
+SUSTAINABILITY_FRAMING = re.compile(
+    r"\b(product|products|solution|solutions|service|services|innovation|future|esg|impact|responsib(?:le|ility))\b",
+    re.I,
+)
+
+LOGGER = logging.getLogger(__name__)
+
+
+def log_pipeline_event(stage: str, block: str, **details: object) -> None:
+    compact = re.sub(r"\s+", " ", block).strip()
+    if len(compact) > 220:
+        compact = compact[:217] + "..."
+    detail_text = ", ".join(f"{k}={v}" for k, v in details.items())
+    LOGGER.warning("[pipeline:%s] %s | %s", stage, compact, detail_text)
 
 
 def load_taxonomy(path: Path = TAXONOMY_PATH) -> Dict[str, List[str]]:
@@ -382,6 +399,26 @@ def make_sentence_blocks(text: str) -> List[str]:
     return blocks
 
 
+def _normalize_block_text(block: str) -> str:
+    return re.sub(r"\s+", " ", (block or "")).strip()
+
+
+def _candidate_blocks(text: str) -> List[str]:
+    raw_blocks = make_sentence_blocks(text)
+    ordered: List[str] = []
+    seen: Set[str] = set()
+    for block in raw_blocks:
+        normalized = _normalize_block_text(block)
+        if len(normalized) < 25:
+            continue
+        key = normalized.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(normalized)
+    return ordered
+
+
 def _matched_taxonomy_keywords(text: str, tier: str) -> Set[str]:
     matches: Set[str] = set()
     for keyword, pattern in TAXONOMY_PATTERNS.get(tier, []):
@@ -454,10 +491,12 @@ def materiality_score(chunk: str, page_url: str) -> int:
 
 def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
     chunks = make_chunks(text)
-    if not chunks:
+    candidate_blocks = _candidate_blocks(text)
+    if not chunks and not candidate_blocks:
         return []
-    sentence_blocks = make_sentence_blocks(text)
-    block_signals = [(block, taxonomy_signal_for_block(block)) for block in sentence_blocks]
+    block_signals = [(block, taxonomy_signal_for_block(block)) for block in candidate_blocks]
+    for block, signal in block_signals:
+        log_pipeline_event("block_extracted", block, tier2=sorted(signal["tier2"]))
 
     has_plan_substantiation = bool(PLAN_SUBSTANTIATION.search(text))
     has_generic_substantiation = bool(GENERIC_SUBSTANTIATION_HINT.search(text))
@@ -493,12 +532,21 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
         if is_asset_or_image_text(chunk):
             continue
         matching_blocks = [block for block, _ in block_signals if chunk in block or block in chunk]
-        relevant_block = max(matching_blocks, key=len) if matching_blocks else chunk
+        relevant_block = max(matching_blocks, key=len) if matching_blocks else _normalize_block_text(chunk)
         taxonomy_signal = taxonomy_signal_for_block(relevant_block)
         tier2_candidate = bool(taxonomy_signal["tier2"])
-        if materiality_score(chunk, page_url) < 3 and not tier2_candidate:
+        fallback_candidate = bool(SUSTAINABILITY_FALLBACK.search(relevant_block) and SUSTAINABILITY_FRAMING.search(relevant_block))
+        if materiality_score(chunk, page_url) < 3 and not tier2_candidate and not fallback_candidate:
+            log_pipeline_event("filtered_materiality", relevant_block, tier2=tier2_candidate, fallback=fallback_candidate)
             continue
-        should_trigger_llm = bool(taxonomy_signal["trigger_llm"])
+        should_trigger_llm = bool(taxonomy_signal["trigger_llm"] or fallback_candidate)
+        log_pipeline_event(
+            "candidate_selected",
+            relevant_block,
+            tier2=tier2_candidate,
+            fallback=fallback_candidate,
+            trigger_llm=should_trigger_llm,
+        )
 
         target_match = MATERIAL_TARGET.search(chunk)
         if target_match:
@@ -553,18 +601,21 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
         is_third_party_context = bool(THIRD_PARTY_EXPLANATORY_CONTEXT.search(chunk))
         commercial_context = bool(re.search(r"\b(offerings?|services?|producten?|solutions?)\b", chunk, re.I))
         is_editorial_context = bool(INFO_EDITORIAL_URL_HINT.search(page_url) or INFO_EDITORIAL_TEXT_HINT.search(chunk))
-        if (
-            (generic_match or should_trigger_llm)
-            and not has_generic_substantiation
-            and not has_absolute_claim
-            and (has_claim_subject or tier2_candidate)
-            and not is_third_party_context
-            and not (is_editorial_context and not commercial_context)
-        ):
+        generic_gate = (generic_match or should_trigger_llm)
+        claim_subject_gate = has_claim_subject or tier2_candidate or fallback_candidate
+        blocked = (
+            has_generic_substantiation
+            or has_absolute_claim
+            or is_third_party_context
+            or (is_editorial_context and not commercial_context)
+        )
+
+        if generic_gate and claim_subject_gate and not blocked:
+            log_pipeline_event("sent_to_llm", relevant_block, category="GENERIC_ENVIRONMENTAL_CLAIMS")
             claim_text = generic_match.group(0) if generic_match else "broad sustainability framing"
             if not generic_match and taxonomy_signal["tier2"]:
                 claim_text = sorted(taxonomy_signal["tier2"])[0]
-            severity = "high" if commercial_context else "medium"
+            severity = "medium"
             substantiation_context = ""
             if taxonomy_signal["tier4"]:
                 substantiation_context = (
@@ -587,6 +638,17 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
                     "environmental benefit language."
                 ),
                 llm_prompt=build_llm_prompt(relevant_block, taxonomy_signal),
+            )
+        elif generic_gate:
+            log_pipeline_event(
+                "filtered_after_candidate",
+                relevant_block,
+                has_generic_substantiation=has_generic_substantiation,
+                has_absolute_claim=has_absolute_claim,
+                claim_subject_gate=claim_subject_gate,
+                is_third_party_context=is_third_party_context,
+                is_editorial_context=is_editorial_context,
+                commercial_context=commercial_context,
             )
 
         label_match = SELF_MADE_LABEL.search(chunk)
