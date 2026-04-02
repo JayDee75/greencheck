@@ -161,6 +161,25 @@ def test_main_article_extraction_prioritizes_intro_and_excludes_related_teasers(
     assert "zero emission cloud services" not in extracted.lower()
     assert debug["intro_captured"] is True
     assert debug["related_articles_excluded"] is True
+    assert debug["found_better_future"] is True
+
+
+def test_related_articles_heading_inside_main_container_is_excluded():
+    html = """
+    <html><body>
+      <main class="content">
+        <h1>Building a more responsible digital future</h1>
+        <p>At Cegeka, we’re not just writing code. We’re writing a better future. By embedding sustainable components into our solutions, we’re proving that digital innovation and ESG can go hand in hand.</p>
+        <section>
+          <h2>Related Articles</h2>
+          <p>Accelerating to Zero Emission Cloud Services by 2030</p>
+        </section>
+      </main>
+    </body></html>
+    """
+    extracted, _ = _extract_main_article_text(html)
+    assert "sustainable components" in extracted.lower()
+    assert "accelerating to zero emission cloud services by 2030" not in extracted.lower()
 
 
 def test_intro_block_claim_is_evaluated_as_generic_environmental_candidate():

@@ -114,6 +114,10 @@ EXCLUDED_SECTION_HINT = re.compile(
     r"newsletter|menu|navigation|cross[-_\s]?link)",
     re.I,
 )
+EXCLUDED_HEADING_TEXT_HINT = re.compile(
+    r"\b(related articles?|recommended|suggested|read more|you may also like|more stories)\b",
+    re.I,
+)
 MAIN_CONTAINER_HINT = re.compile(
     r"(article|blog|post|content|story|main|entry|body)",
     re.I,
@@ -356,7 +360,11 @@ def _is_excluded_container(node) -> bool:
     if node.name in {"nav", "footer", "header", "aside", "form"}:
         return True
     hint_text = _node_hint_text(node)
-    return bool(EXCLUDED_SECTION_HINT.search(hint_text))
+    if EXCLUDED_SECTION_HINT.search(hint_text):
+        return True
+    heading = node.find(["h1", "h2", "h3", "h4"])
+    heading_text = heading.get_text(" ", strip=True) if heading else ""
+    return bool(EXCLUDED_HEADING_TEXT_HINT.search(heading_text))
 
 
 def _extract_main_article_text(html_doc: str) -> Tuple[str, Dict[str, object]]:
@@ -366,7 +374,11 @@ def _extract_main_article_text(html_doc: str) -> Tuple[str, Dict[str, object]]:
 
     excluded_nodes = soup.find_all(_is_excluded_container)
     related_excluded = any(
-        re.search(r"(related|read[-_\s]?next|more[-_\s]?articles?|suggested|teaser)", _node_hint_text(node), re.I)
+        re.search(
+            r"(related|read[-_\s]?next|more[-_\s]?articles?|suggested|teaser|recommended|you may also like)",
+            f"{_node_hint_text(node)} {node.get_text(' ', strip=True)[:180]}",
+            re.I,
+        )
         for node in excluded_nodes
     )
     for node in excluded_nodes:
@@ -387,13 +399,23 @@ def _extract_main_article_text(html_doc: str) -> Tuple[str, Dict[str, object]]:
     title = title_node.get_text(" ", strip=True) if title_node else ""
     intro = ""
     if title_node:
-        intro_node = title_node.find_next("p")
-        if intro_node and best in intro_node.parents:
-            intro = intro_node.get_text(" ", strip=True)
+        for intro_node in title_node.find_all_next("p"):
+            if best not in intro_node.parents:
+                continue
+            parent_hint = _node_hint_text(intro_node.parent or intro_node)
+            if EXCLUDED_SECTION_HINT.search(parent_hint):
+                continue
+            intro_text = _normalize_block_text(intro_node.get_text(" ", strip=True))
+            if len(intro_text) < 40:
+                continue
+            intro = intro_text
+            break
 
     blocks: List[str] = []
     for node in best.find_all(["h2", "h3", "p", "li"]):
         if _is_excluded_container(node):
+            continue
+        if any(_is_excluded_container(parent) for parent in node.parents if getattr(parent, "name", None)):
             continue
         text = node.get_text(" ", strip=True)
         if len(text) >= 25:
@@ -412,10 +434,14 @@ def _extract_main_article_text(html_doc: str) -> Tuple[str, Dict[str, object]]:
         ordered.append(normalized)
 
     main_text = "\n".join(ordered).strip()
+    main_lower = main_text.lower()
     debug = {
         "main_content_length": len(main_text),
+        "main_title": title,
+        "first_paragraph_after_title": intro,
         "intro_captured": bool(intro),
-        "found_sustainable_components": "sustainable components" in main_text.lower(),
+        "found_sustainable_components": "sustainable components" in main_lower,
+        "found_better_future": "better future" in main_lower,
         "related_articles_excluded": related_excluded,
     }
     return main_text, debug
@@ -530,6 +556,15 @@ def _candidate_blocks(text: str) -> List[str]:
     return ordered
 
 
+def _claim_priority(block: str) -> int:
+    lower = block.lower()
+    if "sustainable components" in lower or "better future" in lower:
+        return 0
+    if len(lower) > 140:
+        return 1
+    return 2
+
+
 def _matched_taxonomy_keywords(text: str, tier: str) -> Set[str]:
     matches: Set[str] = set()
     for keyword, pattern in TAXONOMY_PATTERNS.get(tier, []):
@@ -605,6 +640,7 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
     candidate_blocks = _candidate_blocks(text)
     if not chunks and not candidate_blocks:
         return []
+    candidate_blocks = sorted(candidate_blocks, key=_claim_priority)
     block_signals = [(block, taxonomy_signal_for_block(block)) for block in candidate_blocks]
     for block, signal in block_signals:
         log_pipeline_event("block_extracted", block, tier2=sorted(signal["tier2"]))
@@ -649,7 +685,10 @@ def find_issues_on_page(page_url: str, text: str) -> List[Finding]:
         relevant_block = max(matching_blocks, key=len) if matching_blocks else _normalize_block_text(chunk)
         taxonomy_signal = taxonomy_signal_for_block(relevant_block)
         tier2_candidate = bool(taxonomy_signal["tier2"])
-        fallback_candidate = bool(SUSTAINABILITY_FALLBACK.search(relevant_block) and SUSTAINABILITY_FRAMING.search(relevant_block))
+        fallback_candidate = bool(
+            ("sustainable components" in relevant_block.lower() or "better future" in relevant_block.lower())
+            or (SUSTAINABILITY_FALLBACK.search(relevant_block) and SUSTAINABILITY_FRAMING.search(relevant_block))
+        )
         if materiality_score(chunk, page_url) < 3 and not tier2_candidate and not fallback_candidate:
             log_pipeline_event("filtered_materiality", relevant_block, tier2=tier2_candidate, fallback=fallback_candidate)
             continue
@@ -802,10 +841,16 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding]]:
     if not main_text:
         main_text = html_to_text(html)
     LOGGER.warning(
-        "[pipeline:extraction] main_content_length=%s intro_captured=%s found_sustainable_components=%s related_articles_excluded=%s",
+        (
+            "[pipeline:extraction] title=%s intro=%s main_content_length=%s intro_captured=%s "
+            "found_sustainable_components=%s found_better_future=%s related_articles_excluded=%s"
+        ),
+        extraction_debug.get("main_title"),
+        extraction_debug.get("first_paragraph_after_title"),
         extraction_debug.get("main_content_length"),
         extraction_debug.get("intro_captured"),
         extraction_debug.get("found_sustainable_components"),
+        extraction_debug.get("found_better_future"),
         extraction_debug.get("related_articles_excluded"),
     )
     text = main_text
@@ -871,6 +916,8 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
             )
             if "sustainable components" in f.evidence.lower():
                 detected_keywords.insert(0, "sustainable components")
+            if "better future" in f.evidence.lower():
+                detected_keywords.insert(0, "better future")
             detected_keywords = sorted(dict.fromkeys(detected_keywords))
             if detected_keywords:
                 repeated_keywords = ", ".join(detected_keywords)
