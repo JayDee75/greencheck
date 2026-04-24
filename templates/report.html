@@ -117,47 +117,6 @@
       <a class="link" href="/">← New scan</a>
     </section>
 
-    {% if debug_data %}
-    <section class="card">
-      <h2 class="h2">Debug: Hero Claim Pipeline</h2>
-      <div class="issue-section">
-        <div class="issue-k">Extracted H1</div>
-        <div class="issue-box">{{ debug_data.extracted_h1 }}</div>
-      </div>
-      <div class="issue-section">
-        <div class="issue-k">Extracted first paragraph</div>
-        <div class="issue-box">{{ debug_data.extracted_first_paragraph }}</div>
-      </div>
-      <div class="issue-section">
-        <div class="issue-k">Combined heroBlock</div>
-        <div class="issue-box">{{ debug_data.hero_block }}</div>
-      </div>
-      <div class="issue-section">
-        <div class="issue-k">Hero candidate created</div>
-        <div class="issue-box">{{ debug_data.hero_candidate_created }}</div>
-      </div>
-      <div class="issue-section">
-        <div class="issue-k">Hero hard fallback triggered</div>
-        <div class="issue-box">{{ debug_data.hero_hard_fallback_triggered }}</div>
-      </div>
-      <div class="issue-section">
-        <div class="issue-k">Hero raw candidate (always shown in debug)</div>
-        <div class="issue-box">{{ debug_data.hero_raw_candidate }}</div>
-      </div>
-      <div class="issue-section">
-        <div class="issue-k">Created candidates before filtering</div>
-        <div class="issue-box">{{ debug_data.candidates_before_filtering|join(' || ') }}</div>
-      </div>
-      <div class="issue-section">
-        <div class="issue-k">Filtered out candidates after filtering</div>
-        <div class="issue-box">{{ debug_data.filtered_out_candidates_after_filtering|join(' || ') }}</div>
-      </div>
-      <div class="issue-section">
-        <div class="issue-k">Final rendered issues</div>
-        <div class="issue-box">{{ debug_data.final_rendered_issues|join(' || ') }}</div>
-      </div>
-    </section>
-    {% endif %}
   </main>
 </body>
 </html>
