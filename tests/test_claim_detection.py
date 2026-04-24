@@ -3,7 +3,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.main import _extract_main_article_text, clean_snippet, find_issues_on_page
+from app.main import _candidate_blocks, _extract_main_article_text, clean_snippet, find_issues_on_page
 
 
 def test_color_context_without_claim_is_ignored():
@@ -258,6 +258,25 @@ def test_hero_block_with_two_signal_groups_is_forced_into_generic_candidate_pipe
     assert generic
     assert "responsible digital future" in generic[0].evidence.lower()
     assert "sustainable components" in generic[0].evidence.lower()
+
+
+def test_short_first_paragraph_is_used_as_hero_intro_fallback():
+    html = """
+    <html><body>
+      <main>
+        <h1>heroBlock</h1>
+        <p>hero candidate</p>
+      </main>
+    </body></html>
+    """
+    _, debug = _extract_main_article_text(html)
+    assert debug["first_paragraph_after_title"] == "hero candidate"
+    assert debug["hero_block"] == "heroBlock hero candidate"
+
+
+def test_short_hero_block_is_included_in_candidate_blocks():
+    blocks = _candidate_blocks("", hero_block="heroBlock hero candidate")
+    assert blocks == ["heroBlock hero candidate"]
 
 
 def test_cegeka_hero_block_is_extracted_exactly_and_generates_candidate_debug():
