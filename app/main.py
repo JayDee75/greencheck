@@ -438,6 +438,8 @@ def _extract_main_article_text(html_doc: str) -> Tuple[str, Dict[str, object]]:
     title = _normalize_block_text(title_node.get_text(" ", strip=True)) if title_node else ""
     intro = ""
     first_intro_node = None
+    short_intro_fallback = ""
+    short_intro_node = None
     if title_node:
         for intro_node in title_node.find_all_next("p"):
             if best not in intro_node.parents:
@@ -446,11 +448,20 @@ def _extract_main_article_text(html_doc: str) -> Tuple[str, Dict[str, object]]:
             if EXCLUDED_SECTION_HINT.search(parent_hint):
                 continue
             intro_text = _normalize_block_text(intro_node.get_text(" ", strip=True))
+            if len(intro_text) < 10:
+                continue
             if len(intro_text) < 40:
+                if not short_intro_fallback:
+                    short_intro_fallback = intro_text
+                    short_intro_node = intro_node
                 continue
             intro = intro_text
             first_intro_node = intro_node
             break
+
+    if not intro and short_intro_fallback:
+        intro = short_intro_fallback
+        first_intro_node = short_intro_node
     hero_paragraphs: List[str] = [intro] if intro else []
     hero_block = _normalize_block_text(" ".join(part for part in [title, intro] if part))
 
@@ -582,7 +593,7 @@ def _candidate_blocks(text: str, hero_block: str = "") -> List[str]:
     ordered: List[str] = []
     seen: Set[str] = set()
     normalized_hero_block = _normalize_block_text(hero_block)
-    if len(normalized_hero_block) >= 25:
+    if len(normalized_hero_block) >= 20:
         ordered.append(normalized_hero_block)
         seen.add(normalized_hero_block.lower())
     for block in raw_blocks:
