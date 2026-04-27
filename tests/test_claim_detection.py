@@ -24,13 +24,13 @@ def test_absolute_claim_not_duplicated_as_generic_claim():
     assert "GENERIC_ENVIRONMENTAL_CLAIMS" not in categories
 
 
-def test_no_low_severity_findings_are_emitted():
+def test_generic_claims_are_low_priority():
     findings = find_issues_on_page(
         "https://example.com/impact",
         "We are sustainable and eco-friendly in our services.",
     )
     assert findings
-    assert all(f.severity in {"high", "medium"} for f in findings)
+    assert any(f.severity == "low" for f in findings if f.category == "GENERIC_ENVIRONMENTAL_CLAIMS")
 
 
 def test_image_filename_or_media_path_is_ignored_for_generic_claims():
@@ -258,6 +258,60 @@ def test_hero_block_with_two_signal_groups_is_forced_into_generic_candidate_pipe
     assert generic
     assert "responsible digital future" in generic[0].evidence.lower()
     assert "sustainable components" in generic[0].evidence.lower()
+
+
+def test_duplicate_generic_claims_are_fuzzy_deduplicated():
+    text = (
+        "Our services are sustainable for customers. "
+        "Our services are sustainable for customer."
+    )
+    findings = find_issues_on_page("https://example.com/sustainability", text)
+    generic = [f for f in findings if f.category == "GENERIC_ENVIRONMENTAL_CLAIMS"]
+    assert len(generic) == 1
+
+
+def test_sustainable_in_hr_context_is_not_flagged():
+    findings = find_issues_on_page(
+        "https://example.com/hr",
+        "We help people build a sustainable career and strengthen HR excellence.",
+    )
+    assert all(f.category != "GENERIC_ENVIRONMENTAL_CLAIMS" for f in findings)
+
+
+def test_downloadable_report_context_suppresses_generic_claims():
+    findings = find_issues_on_page(
+        "https://example.com/esg",
+        "Our sustainable strategy is detailed in our ESG report. Download report (sustainability-report.pdf).",
+    )
+    assert all(f.category != "GENERIC_ENVIRONMENTAL_CLAIMS" for f in findings)
+
+
+def test_sdgs_reference_is_treated_as_third_party_context():
+    findings = find_issues_on_page(
+        "https://example.com/esg",
+        "Our SDGs alignment supports our sustainability framework and reporting.",
+    )
+    assert all(f.category != "GENERIC_ENVIRONMENTAL_CLAIMS" for f in findings)
+
+
+def test_forward_looking_target_without_plan_is_high_risk():
+    findings = find_issues_on_page(
+        "https://example.com/esg",
+        "We will reduce emissions by 55% by 2030.",
+    )
+    forward = [f for f in findings if f.category == "FUTURE_NET_ZERO_TARGETS"]
+    assert forward
+    assert forward[0].severity == "high"
+
+
+def test_forward_looking_target_with_nearby_plan_is_not_high_risk():
+    findings = find_issues_on_page(
+        "https://example.com/esg",
+        "We will reduce emissions by 55% by 2030. Baseline year 2019 with Scope 1 and Scope 2 milestones in our roadmap.",
+    )
+    forward = [f for f in findings if f.category == "FUTURE_NET_ZERO_TARGETS"]
+    assert forward
+    assert forward[0].severity == "medium"
 
 
 def test_short_first_paragraph_is_used_as_hero_intro_fallback():

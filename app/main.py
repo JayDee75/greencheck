@@ -4,7 +4,9 @@ import html
 import json
 import logging
 import re
+import string
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
@@ -43,6 +45,15 @@ MATERIAL_TARGET = re.compile(
     r".{0,140}?\b(by|before|in)\s*(20\d{2})\b"
 )
 
+FORWARD_LOOKING_ENV_TARGET = re.compile(
+    r"(?is)\b("
+    r"(?:reduce|cut|lower|decrease)\s+(?:our\s+)?(?:ghg|greenhouse\s+gas|emissions?|co2|carbon).{0,90}?\d{1,3}\s*(?:%|percent).{0,50}?\bby\s*(20\d{2})\b|"
+    r"(?:net\s*zero|climate\s*neutral|carbon\s*neutral).{0,40}?\bby\s*(20\d{2})\b|"
+    r"(?:target|commit|pledge|aim).{0,100}?\b(?:net\s*zero|climate\s*neutral|carbon\s*neutral|"
+    r"(?:\d{1,3}\s*(?:%|percent).{0,30}?(?:emissions?|ghg|co2|carbon))).{0,40}?\bby\s*(20\d{2})\b"
+    r")"
+)
+
 ABSOLUTE_CLAIMS = re.compile(
     r"\b(net\s*zero|carbon\s*neutral|climate\s*neutral|co2\s*-?\s*neutral|"
     r"zero\s*emissions?|emissie\s*-?\s*vrij|fully\s*decarboni[sz]ed)\b",
@@ -70,6 +81,16 @@ GENERIC_SUBSTANTIATION_HINT = re.compile(
     re.I,
 )
 
+NON_ENVIRONMENTAL_SUSTAINABLE_CONTEXT = re.compile(
+    r"\b(career|hr|workforce|employment|people|worker)\b",
+    re.I,
+)
+
+REPORT_REFERENCE_HINT = re.compile(
+    r"\b(esg\s*report|sustainability\s*report|see\s*report|learn\s*more|download\s*report|annual\s*report)\b|\.pdf\b",
+    re.I,
+)
+
 NON_MATERIAL_URL_HINT = re.compile(r"/(news|blog|events|careers|jobs|investors?)/", re.I)
 COLOR_CONTEXT_HINT = re.compile(
     r"\b(color|colour|pantone|rgb|hex|palette|shirt|t-?shirt|dress|paint|"
@@ -90,6 +111,7 @@ CLAIM_SUBJECT_HINT = re.compile(
 THIRD_PARTY_EXPLANATORY_CONTEXT = re.compile(
     r"\b(ecovadis|b\s*corp(?:oration)?|bcorp|un\s+global\s+compact|iso\s*\d{3,5}|"
     r"science\s+based\s+targets?\s+initiative|sbti|fairtrade|eu\s*ecolabel|"
+    r"sdgs?|sustainable\s+development\s+goals?|"
     r"ratings?|rating\s+framework|framework|benchmark|methodolog(?:y|ie)|evaluation|assess(?:ment|ed)|"
     r"third[-\s]?party|independent|certification\s+scheme|recogni[sz]ed\s+authority|"
     r"sustainable\s+procurement|labou?r\s*(?:&|and)\s*human\s+rights)\b",
@@ -198,7 +220,7 @@ RULEBOOK = {
 CATEGORY_LABELS = {
     "GENERIC_ENVIRONMENTAL_CLAIMS": "Generic Environmental Claim",
     "CARBON_NEUTRALITY_CLAIMS": "Carbon Neutrality Claim",
-    "FUTURE_NET_ZERO_TARGETS": "Future Net Zero Target",
+    "FUTURE_NET_ZERO_TARGETS": "Forward-Looking Environmental Claim",
     "SUSTAINABILITY_LABELS": "Sustainability Label",
 }
 
@@ -509,36 +531,7 @@ def _extract_main_article_text(html_doc: str) -> Tuple[str, Dict[str, object]]:
 def make_chunks(text: str) -> List[str]:
     if not text:
         return []
-
-    normalized = (
-        text.replace("•", "\n• ")
-        .replace("·", "\n· ")
-        .replace("–", "-")
-        .replace("—", "-")
-    )
-
-    lines: List[str] = []
-    for line in normalized.split("\n"):
-        line = line.strip()
-        if not line:
-            continue
-        if len(line) >= 25:
-            lines.append(line)
-
-    unique_lines: List[str] = []
-    seen = set()
-    for line in lines:
-        key = re.sub(r"\s+", " ", line.lower()).strip()
-        if key in seen:
-            continue
-        seen.add(key)
-        unique_lines.append(line)
-
-    if unique_lines:
-        return unique_lines
-
-    fallback = re.sub(r"\s+", " ", normalized).strip()
-    return [fallback] if len(fallback) >= 25 else []
+    return [sentence for sentence in sentence_tokenize(text) if len(sentence) >= 25]
 
 
 def clean_snippet(s: str) -> str:
@@ -551,27 +544,62 @@ def clean_snippet(s: str) -> str:
 
 
 def make_sentence_blocks(text: str) -> List[str]:
-    paragraphs = [p.strip() for p in re.split(r"\n+", text or "") if p.strip()]
+    normalized = (text or "").strip()
+    paragraphs = [_normalize_block_text(p) for p in re.split(r"\n+", normalized) if _normalize_block_text(p)]
     blocks: List[str] = []
+    seen: Set[str] = set()
     for paragraph in paragraphs:
-        blocks.append(paragraph)
-        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", paragraph) if s.strip()]
-        if len(sentences) <= 1:
-            continue
-        for idx in range(len(sentences)):
-            window = " ".join(sentences[idx : idx + 2]).strip()
-            if window:
-                blocks.append(window)
-            long_window = " ".join(sentences[idx : idx + 3]).strip()
-            if long_window:
-                blocks.append(long_window)
-    for idx in range(len(paragraphs)):
-        merged = " ".join(paragraphs[idx : idx + 3]).strip()
-        if merged:
-            blocks.append(merged)
-    if not blocks and text.strip():
-        blocks.append(text.strip())
-    return blocks
+        key = normalize_claim_text(paragraph)
+        if key and key not in seen:
+            seen.add(key)
+            blocks.append(paragraph)
+    merged_paragraphs = _normalize_block_text(" ".join(paragraphs))
+    merged_key = normalize_claim_text(merged_paragraphs)
+    if merged_paragraphs and merged_key and merged_key not in seen:
+        seen.add(merged_key)
+        blocks.append(merged_paragraphs)
+    for sentence in sentence_tokenize(text):
+        key = normalize_claim_text(sentence)
+        if key and key not in seen:
+            seen.add(key)
+            blocks.append(sentence)
+    if blocks:
+        return blocks
+    return [normalized] if normalized else []
+
+
+def normalize_claim_text(text: str) -> str:
+    normalized = (text or "").lower().strip()
+    normalized = normalized.translate(str.maketrans("", "", string.punctuation))
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def text_similarity(left: str, right: str) -> float:
+    return SequenceMatcher(None, normalize_claim_text(left), normalize_claim_text(right)).ratio()
+
+
+def sentence_tokenize(text: str) -> List[str]:
+    normalized = (
+        (text or "")
+        .replace("•", ". ")
+        .replace("·", ". ")
+        .replace("–", "-")
+        .replace("—", "-")
+    )
+    paragraphs = [p.strip() for p in re.split(r"\n+", normalized) if p.strip()]
+    sentences: List[str] = []
+    seen: Set[str] = set()
+    for paragraph in paragraphs:
+        for sentence in re.split(r"(?<=[.!?])\s+", paragraph):
+            cleaned = _normalize_block_text(sentence)
+            if len(cleaned) < 10:
+                continue
+            key = normalize_claim_text(cleaned)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            sentences.append(cleaned)
+    return sentences
 
 
 def _normalize_block_text(block: str) -> str:
@@ -687,6 +715,8 @@ def materiality_score(chunk: str, page_url: str) -> int:
         score += 1
     if MATERIAL_TARGET.search(chunk):
         score += 2
+    if FORWARD_LOOKING_ENV_TARGET.search(chunk):
+        score += 2
     if ABSOLUTE_CLAIMS.search(chunk):
         score += 2
     if GENERIC_SUSTAINABILITY_CLAIM.search(chunk):
@@ -723,10 +753,21 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
         candidate_created=hero_candidate_created,
     )
 
+    sentence_blocks = sentence_tokenize(text)
     has_plan_substantiation = bool(PLAN_SUBSTANTIATION.search(text))
     has_generic_substantiation = bool(GENERIC_SUBSTANTIATION_HINT.search(text))
+    has_external_report_reference = bool(REPORT_REFERENCE_HINT.search(text))
     issues: List[Finding] = []
     seen: Set[Tuple[str, str]] = set()
+    seen_claims_by_category: Dict[str, List[str]] = {}
+
+    def has_nearby_forward_substantiation(chunk: str) -> bool:
+        chunk_key = normalize_claim_text(chunk)
+        idx = next((i for i, block in enumerate(sentence_blocks) if normalize_claim_text(block) == chunk_key), -1)
+        if idx < 0:
+            return bool(PLAN_SUBSTANTIATION.search(chunk))
+        window = " ".join(sentence_blocks[max(0, idx - 1) : idx + 2])
+        return bool(PLAN_SUBSTANTIATION.search(window))
 
     def add_issue(
         category: str,
@@ -736,11 +777,35 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
         how_to_fix: str,
         llm_prompt: str = "",
     ) -> None:
-        normalized = re.sub(r"\s+", " ", evidence.lower()).strip()
+        normalized = normalize_claim_text(evidence)
         key = (category, normalized)
         if key in seen:
             return
+        for idx, existing_issue in enumerate(issues):
+            if existing_issue.category != category:
+                continue
+            existing_norm = normalize_claim_text(existing_issue.evidence)
+            is_similar = text_similarity(existing_issue.evidence, evidence) > 0.85
+            has_overlap = normalized in existing_norm or existing_norm in normalized
+            if is_similar or has_overlap:
+                if len(normalized) > len(existing_norm):
+                    issues[idx] = Finding(
+                        category=category,
+                        url=page_url,
+                        message=message,
+                        evidence=evidence.strip(),
+                        severity=severity,
+                        how_to_fix=how_to_fix,
+                        llm_prompt=llm_prompt,
+                    )
+                    seen.discard((category, existing_norm))
+                    seen.add(key)
+                return
+        existing_claims = seen_claims_by_category.setdefault(category, [])
+        if any(text_similarity(existing, evidence) > 0.85 for existing in existing_claims):
+            return
         seen.add(key)
+        existing_claims.append(evidence)
         issues.append(
             Finding(
                 category=category,
@@ -756,7 +821,7 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
     generic_candidate_created = False
     generic_candidate_filtered = False
 
-    prioritized_chunks = chunks[:]
+    prioritized_chunks = sorted(chunks[:], key=_claim_priority)
     if normalized_hero_block:
         if normalized_hero_block not in prioritized_chunks:
             prioritized_chunks.insert(0, normalized_hero_block)
@@ -800,11 +865,14 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
             trigger_llm=should_trigger_llm,
         )
 
-        target_match = MATERIAL_TARGET.search(chunk)
+        target_match = FORWARD_LOOKING_ENV_TARGET.search(chunk) or MATERIAL_TARGET.search(chunk)
         if target_match:
-            pct = target_match.group(3)
-            year = target_match.group(6)
-            severity = "medium" if has_plan_substantiation else "high"
+            pct_match = re.search(r"(\d{1,3}\s*(?:%|percent))", chunk, re.I)
+            pct = pct_match.group(1) if pct_match else "stated target"
+            year_match = re.search(r"\bby\s*(20\d{2})\b", chunk, re.I)
+            year = year_match.group(1) if year_match else "target year"
+            has_local_substantiation = has_plan_substantiation or has_nearby_forward_substantiation(chunk)
+            severity = "medium" if has_local_substantiation else "high"
             message = (
                 f"Future emissions target ({pct} by {year}) lacks concrete implementation details, quantified milestones, "
                 "or clear third-party validation."
@@ -846,6 +914,11 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
             )
 
         generic_match = GENERIC_SUSTAINABILITY_CLAIM.search(chunk)
+        non_environmental_sustainable = bool(
+            generic_match
+            and generic_match.group(0).lower().startswith("sustainab")
+            and NON_ENVIRONMENTAL_SUSTAINABLE_CONTEXT.search(chunk)
+        )
         if generic_match and COLOR_CONTEXT_HINT.search(chunk) and not CLAIM_ACTION_HINT.search(chunk):
             continue
 
@@ -857,7 +930,9 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
         claim_subject_gate = has_claim_subject or tier2_candidate or fallback_candidate
         blocked = (
             has_generic_substantiation
+            or has_external_report_reference
             or has_absolute_claim
+            or non_environmental_sustainable
             or is_third_party_context
             or (is_editorial_context and not commercial_context)
         )
@@ -868,7 +943,7 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
             claim_text = generic_match.group(0) if generic_match else "broad sustainability framing"
             if not generic_match and taxonomy_signal["tier2"]:
                 claim_text = sorted(taxonomy_signal["tier2"])[0]
-            severity = "medium"
+            severity = "low"
             substantiation_context = ""
             if taxonomy_signal["tier4"]:
                 substantiation_context = (
@@ -987,7 +1062,8 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], 
 
     high_findings = [f for f in findings if f.severity == "high"][:5]
     medium_findings = [f for f in findings if f.severity == "medium"][:8]
-    return 1, high_findings + medium_findings, extraction_debug
+    low_findings = [f for f in findings if f.severity == "low"][:4]
+    return 1, high_findings + medium_findings + low_findings, extraction_debug
 
 
 def calc_risk_score(findings: List[Finding]) -> int:
