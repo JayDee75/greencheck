@@ -350,6 +350,59 @@ def test_sdworx_style_55_percent_2030_claim_detected_once():
     assert len(forward) == 1
 
 
+def test_future_target_required_case_full_sentence_detected():
+    text = (
+        "Our ESG Ambitions Environment Reduce greenhouse gas emissions by at least 55% by 2030, "
+        "aligning with the EU's Green Deal and international environmental regulations."
+    )
+    findings = find_issues_on_page("https://example.com/esg", text)
+    forward = [f for f in findings if f.category == "FUTURE_NET_ZERO_TARGETS"]
+    assert len(forward) == 1
+
+
+def test_future_target_required_case_split_blocks_detected():
+    blocks = [
+        "Our ESG Ambitions",
+        "Environment",
+        "Reduce greenhouse gas emissions by at least 55% by 2030, aligning with the EU's Green Deal and international environmental regulations.",
+    ]
+    findings = find_issues_on_page("https://example.com/esg", "\n".join(blocks))
+    forward = [f for f in findings if f.category == "FUTURE_NET_ZERO_TARGETS"]
+    assert len(forward) == 1
+
+
+def test_future_target_required_case_simple_reduction_detected():
+    findings = find_issues_on_page(
+        "https://example.com/targets",
+        "Reduce greenhouse gas emissions by at least 55% by 2030.",
+    )
+    assert len([f for f in findings if f.category == "FUTURE_NET_ZERO_TARGETS"]) == 1
+
+
+def test_future_target_required_case_scope_target_detected():
+    findings = find_issues_on_page(
+        "https://example.com/targets",
+        "We aim to cut Scope 1 and 2 emissions by 40% before 2030.",
+    )
+    assert len([f for f in findings if f.category == "FUTURE_NET_ZERO_TARGETS"]) == 1
+
+
+def test_future_target_required_case_renewable_target_detected():
+    findings = find_issues_on_page(
+        "https://example.com/energy",
+        "100% renewable electricity by 2028.",
+    )
+    assert len([f for f in findings if f.category == "FUTURE_NET_ZERO_TARGETS"]) == 1
+
+
+def test_future_target_required_case_plastic_free_target_detected():
+    findings = find_issues_on_page(
+        "https://example.com/packaging",
+        "Plastic-free packaging by 2030.",
+    )
+    assert len([f for f in findings if f.category == "FUTURE_NET_ZERO_TARGETS"]) == 1
+
+
 def test_short_first_paragraph_is_used_as_hero_intro_fallback():
     html = """
     <html><body>
@@ -367,6 +420,23 @@ def test_short_first_paragraph_is_used_as_hero_intro_fallback():
 def test_short_hero_block_is_included_in_candidate_blocks():
     blocks = _candidate_blocks("", hero_block="heroBlock hero candidate")
     assert blocks == ["heroBlock hero candidate"]
+
+
+def test_extraction_includes_card_column_text_from_div_span():
+    html = """
+    <html><body>
+      <main>
+        <section class="cards">
+          <div class="card"><span>Our ESG Ambitions</span></div>
+          <div class="card"><span>Environment</span></div>
+          <div class="card"><span>Reduce greenhouse gas emissions by at least 55% by 2030.</span></div>
+        </section>
+      </main>
+    </body></html>
+    """
+    extracted, _ = _extract_main_article_text(html)
+    findings = find_issues_on_page("https://example.com/esg", extracted)
+    assert any(f.category == "FUTURE_NET_ZERO_TARGETS" for f in findings)
 
 
 def test_cegeka_hero_block_is_extracted_exactly_and_generates_candidate_debug():
