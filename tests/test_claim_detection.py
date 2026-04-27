@@ -314,6 +314,42 @@ def test_forward_looking_target_with_nearby_plan_is_not_high_risk():
     assert forward[0].severity == "medium"
 
 
+def test_forward_target_detection_is_not_hardcoded_to_specific_brand_or_site():
+    findings = find_issues_on_page(
+        "https://example.org/environment",
+        "We aim to cut Scope 1 and 2 emissions by 40% before 2030.",
+    )
+    assert any(f.category == "FUTURE_NET_ZERO_TARGETS" for f in findings)
+
+
+def test_universal_forward_target_detects_non_ghg_environmental_subjects():
+    findings = find_issues_on_page(
+        "https://example.com/packaging",
+        "Plastic-free packaging by 2030. 100% renewable electricity by 2028. Reduce water use by 25% by 2026.",
+    )
+    forward = [f for f in findings if f.category == "FUTURE_NET_ZERO_TARGETS"]
+    assert len(forward) >= 3
+
+
+def test_forward_target_not_suppressed_by_generic_esg_report_reference():
+    findings = find_issues_on_page(
+        "https://example.com/sustainability",
+        "Reduce greenhouse gas emissions by at least 55% by 2030. See our ESG report for more details.",
+    )
+    forward = [f for f in findings if f.category == "FUTURE_NET_ZERO_TARGETS"]
+    assert forward
+    assert forward[0].severity == "high"
+
+
+def test_sdworx_style_55_percent_2030_claim_detected_once():
+    findings = find_issues_on_page(
+        "https://www.any-company.com/sustainability",
+        "We will reduce greenhouse gas emissions by at least 55% by 2030.",
+    )
+    forward = [f for f in findings if f.category == "FUTURE_NET_ZERO_TARGETS"]
+    assert len(forward) == 1
+
+
 def test_short_first_paragraph_is_used_as_hero_intro_fallback():
     html = """
     <html><body>

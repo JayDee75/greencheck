@@ -31,13 +31,6 @@ CLIMATE_CONTEXT = re.compile(
 
 SUSTAINABILITY_CONTEXT = re.compile(r"\b(sustainab(?:le|ility)|esg|environmental|duurza+am)\b", re.I)
 
-PLAN_SUBSTANTIATION = re.compile(
-    r"\b(baseline\s*year|base\s*year|basisjaar|referentiejaar|scope\s*1|scope\s*2|scope\s*3|"
-    r"interim\s*target|milestone|roadmap|transition\s*plan|actieplan|capex|opex|investment|"
-    r"verified|assurance|audit|methodology|methodologie|ghg\s*protocol|sbti|science[-\s]?based)\b",
-    re.I,
-)
-
 MATERIAL_TARGET = re.compile(
     r"(?is)\b(aim\s*to|target|commit|pledge|plan\s*to|will|shall|reduce|cut|lower|decrease)\b"
     r".{0,180}?\b(emissions?|ghg|greenhouse\s*gas|co2|co2e|carbon)\b"
@@ -53,6 +46,36 @@ FORWARD_LOOKING_ENV_TARGET = re.compile(
     r"(?:\d{1,3}\s*(?:%|percent).{0,30}?(?:emissions?|ghg|co2|carbon))).{0,40}?\bby\s*(20\d{2})\b"
     r")"
 )
+
+ENV_TARGET_ACTION = re.compile(
+    r"\b(reduce|cut|lower|decrease|achieve|reach|become|transition\s+to|align\s+with|decarboni[sz]e|eliminate|phase\s+out)\b",
+    re.I,
+)
+ENV_TARGET_SUBJECT = re.compile(
+    r"\b(greenhouse\s+gas\s+emissions?|ghg\s+emissions?|co2\s+emissions?|carbon\s+emissions?|carbon\s+footprint|"
+    r"climate\s+impact|energy\s+use|renewable\s+(?:energy|electricity)|plastic|waste|water\s+use|"
+    r"biodiversity\s+impact|packaging\s+impact|scope\s*1|scope\s*2|scope\s*3|emissions?)\b",
+    re.I,
+)
+ENV_TARGET_QUANT_OR_ABS = re.compile(
+    r"\b(\d{1,3}\s*(?:%|percent)|net\s*zero|carbon\s*neutral|climate\s*neutral|zero\s*waste|"
+    r"100%\s*renewable|fully\s*recyclable|plastic[-\s]?free)\b",
+    re.I,
+)
+ENV_TARGET_DEADLINE = re.compile(
+    r"\b(?:by|before|in)\s+(?:\d{1,2}\s+[A-Za-z]+\s+)?(20\d{2})\b",
+    re.I,
+)
+
+BASELINE_SIGNAL = re.compile(r"\b(baseline\s*year|base\s*year|reference\s*year|referentiejaar|basisjaar)\b", re.I)
+PROGRESS_SIGNAL = re.compile(r"\b(progress|on\s+track|achieved|reduced\s+by|year[-\s]?on[-\s]?year)\b", re.I)
+SCOPE_SIGNAL = re.compile(r"\b(scope\s*1|scope\s*2|scope\s*3|boundary|inventory\s+boundary)\b", re.I)
+METHOD_SIGNAL = re.compile(r"\b(ghg\s*protocol|sbti|science[-\s]?based|iso\s*14064|lca|methodolog(?:y|ie)|standard)\b", re.I)
+MILESTONE_SIGNAL = re.compile(r"\b(interim\s+target|milestone|roadmap|transition\s+plan|phase)\b", re.I)
+IMPLEMENTATION_SIGNAL = re.compile(r"\b(implementation|measure|action\s+plan|capex|opex|investment|program(?:me)?)\b", re.I)
+GOVERNANCE_SIGNAL = re.compile(r"\b(governance|board|owner|accountab(?:le|ility)|responsib(?:le|ility))\b", re.I)
+CADENCE_SIGNAL = re.compile(r"\b(report(?:ing)?\s+(?:cadence|annually|quarterly)|annual\s+update|disclose)\b", re.I)
+VERIFICATION_SIGNAL = re.compile(r"\b(independent\s+verification|assurance|audit|verified|certifi(?:ed|cation))\b", re.I)
 
 ABSOLUTE_CLAIMS = re.compile(
     r"\b(net\s*zero|carbon\s*neutral|climate\s*neutral|co2\s*-?\s*neutral|"
@@ -208,8 +231,10 @@ RULEBOOK = {
         "auditable basis and boundaries, creating a high risk of misleading neutrality messaging."
     ),
     "FUTURE_NET_ZERO_TARGETS": (
-        "Detected Rule Violation: This future net zero / emissions reduction target is presented without a concrete implementation "
-        "plan, quantified milestones, or clear verification details."
+        "This is a forward-looking environmental performance target. Under EmpCo/ECGT rules, future environmental claims must "
+        "be supported by a clear, publicly available and verifiable implementation plan. The claim includes an environmental target "
+        "and a future deadline, but the scanned content does not provide sufficient substantiation such as baseline year, scope or "
+        "boundary, methodology, interim milestones, implementation measures, governance, reporting cadence, or independent verification."
     ),
     "SUSTAINABILITY_LABELS": (
         "Detected Rule Violation: This sustainability seal/label appears self-created or insufficiently linked to a recognised "
@@ -220,7 +245,7 @@ RULEBOOK = {
 CATEGORY_LABELS = {
     "GENERIC_ENVIRONMENTAL_CLAIMS": "Generic Environmental Claim",
     "CARBON_NEUTRALITY_CLAIMS": "Carbon Neutrality Claim",
-    "FUTURE_NET_ZERO_TARGETS": "Forward-Looking Environmental Claim",
+    "FUTURE_NET_ZERO_TARGETS": "Forward-looking environmental performance target",
     "SUSTAINABILITY_LABELS": "Sustainability Label",
 }
 
@@ -717,6 +742,8 @@ def materiality_score(chunk: str, page_url: str) -> int:
         score += 2
     if FORWARD_LOOKING_ENV_TARGET.search(chunk):
         score += 2
+    if is_forward_environmental_target(chunk):
+        score += 2
     if ABSOLUTE_CLAIMS.search(chunk):
         score += 2
     if GENERIC_SUSTAINABILITY_CLAIM.search(chunk):
@@ -726,6 +753,41 @@ def materiality_score(chunk: str, page_url: str) -> int:
     if NON_MATERIAL_URL_HINT.search(page_url):
         score -= 1
     return score
+
+
+def is_forward_environmental_target(text: str) -> bool:
+    normalized = text or ""
+    has_action = bool(ENV_TARGET_ACTION.search(normalized))
+    has_subject = bool(ENV_TARGET_SUBJECT.search(normalized))
+    has_quant_or_abs = bool(ENV_TARGET_QUANT_OR_ABS.search(normalized))
+    has_deadline = bool(ENV_TARGET_DEADLINE.search(normalized))
+    score = sum((has_action, has_subject, has_quant_or_abs, has_deadline))
+
+    absolute_with_deadline = bool(
+        re.search(
+            r"\b(net\s*zero|carbon\s*neutral|climate\s*neutral|zero\s*waste|100%\s*renewable|fully\s*recyclable|plastic[-\s]?free)\b",
+            normalized,
+            re.I,
+        )
+        and has_deadline
+    )
+
+    return absolute_with_deadline or (has_deadline and score >= 3 and (has_subject or has_quant_or_abs))
+
+
+def forward_target_substantiation_signal_count(text: str) -> int:
+    patterns = [
+        BASELINE_SIGNAL,
+        PROGRESS_SIGNAL,
+        SCOPE_SIGNAL,
+        METHOD_SIGNAL,
+        MILESTONE_SIGNAL,
+        IMPLEMENTATION_SIGNAL,
+        GOVERNANCE_SIGNAL,
+        CADENCE_SIGNAL,
+        VERIFICATION_SIGNAL,
+    ]
+    return sum(1 for pattern in patterns if pattern.search(text or ""))
 
 
 def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extraction_debug: Optional[Dict[str, object]] = None) -> List[Finding]:
@@ -754,20 +816,19 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
     )
 
     sentence_blocks = sentence_tokenize(text)
-    has_plan_substantiation = bool(PLAN_SUBSTANTIATION.search(text))
     has_generic_substantiation = bool(GENERIC_SUBSTANTIATION_HINT.search(text))
     has_external_report_reference = bool(REPORT_REFERENCE_HINT.search(text))
     issues: List[Finding] = []
     seen: Set[Tuple[str, str]] = set()
     seen_claims_by_category: Dict[str, List[str]] = {}
 
-    def has_nearby_forward_substantiation(chunk: str) -> bool:
+    def nearby_forward_substantiation_count(chunk: str) -> int:
         chunk_key = normalize_claim_text(chunk)
         idx = next((i for i, block in enumerate(sentence_blocks) if normalize_claim_text(block) == chunk_key), -1)
         if idx < 0:
-            return bool(PLAN_SUBSTANTIATION.search(chunk))
-        window = " ".join(sentence_blocks[max(0, idx - 1) : idx + 2])
-        return bool(PLAN_SUBSTANTIATION.search(window))
+            return forward_target_substantiation_signal_count(chunk)
+        window = " ".join(sentence_blocks[max(0, idx - 1) : idx + 3])
+        return forward_target_substantiation_signal_count(window)
 
     def add_issue(
         category: str,
@@ -850,7 +911,13 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
             or hard_hero_fallback_candidate
             or (SUSTAINABILITY_FALLBACK.search(relevant_block) and SUSTAINABILITY_FRAMING.search(relevant_block))
         )
-        if materiality_score(chunk, page_url) < 3 and not tier2_candidate and not fallback_candidate and not is_hero_block:
+        if (
+            materiality_score(chunk, page_url) < 3
+            and not tier2_candidate
+            and not fallback_candidate
+            and not is_hero_block
+            and not is_forward_environmental_target(chunk)
+        ):
             log_pipeline_event("filtered_materiality", relevant_block, tier2=tier2_candidate, fallback=fallback_candidate)
             filtered_after_materiality.append(relevant_block)
             continue
@@ -866,28 +933,30 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
         )
 
         target_match = FORWARD_LOOKING_ENV_TARGET.search(chunk) or MATERIAL_TARGET.search(chunk)
-        if target_match:
+        if target_match or is_forward_environmental_target(chunk):
             pct_match = re.search(r"(\d{1,3}\s*(?:%|percent))", chunk, re.I)
             pct = pct_match.group(1) if pct_match else "stated target"
-            year_match = re.search(r"\bby\s*(20\d{2})\b", chunk, re.I)
+            year_match = ENV_TARGET_DEADLINE.search(chunk)
             year = year_match.group(1) if year_match else "target year"
-            has_local_substantiation = has_plan_substantiation or has_nearby_forward_substantiation(chunk)
-            severity = "medium" if has_local_substantiation else "high"
-            message = (
-                f"Future emissions target ({pct} by {year}) lacks concrete implementation details, quantified milestones, "
-                "or clear third-party validation."
-                if severity == "high"
-                else f"Future emissions target ({pct} by {year}) needs tighter implementation detail and verification evidence."
+            substantiation_signals = max(
+                nearby_forward_substantiation_count(chunk),
+                forward_target_substantiation_signal_count(text),
             )
+            severity = "medium" if substantiation_signals >= 3 else "high"
+            message = RULEBOOK["FUTURE_NET_ZERO_TARGETS"]
             add_issue(
                 category="FUTURE_NET_ZERO_TARGETS",
                 severity=severity,
                 message=message,
                 evidence=clean_snippet(chunk),
                 how_to_fix=(
-                    "Recommendations and advice: Add a concrete transition plan with scope boundaries (Scopes 1, 2, and where relevant 3), "
-                    "a baseline year, interim yearly or multi-year milestones, investment and execution measures, and a transparent "
-                    "monitoring method with independent verification."
+                    "Add a substantiation package next to the claim or via a clearly linked page, including: "
+                    "1. baseline year and full environmental inventory boundary, such as Scopes 1, 2, and relevant Scope 3 categories "
+                    "for GHG claims 2. methodology or standard used, such as GHG Protocol, SBTi, ISO 14064, LCA, or another relevant "
+                    "recognised method 3. current progress against the baseline 4. interim targets and milestones 5. specific measures "
+                    "to achieve the target 6. progress reporting cadence and governance 7. independent third-party verification or "
+                    "assurance statement. If these elements are not available, soften the wording, for example 'we aim to reduce...' "
+                    "or 'we are working toward...', and avoid presenting the target as a firm or fully substantiated commitment."
                 ),
                 llm_prompt=build_llm_prompt(relevant_block, taxonomy_signal),
             )
