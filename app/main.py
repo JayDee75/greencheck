@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+import os
 import re
 import string
 from dataclasses import dataclass
@@ -156,7 +157,7 @@ INFO_EDITORIAL_TEXT_HINT = re.compile(
 )
 EXCLUDED_SECTION_HINT = re.compile(
     r"(related|read[-_\s]?next|read[-_\s]?more|more[-_\s]?articles?|suggested|recommended|"
-    r"teaser|promo|footer|breadcrumb|newsletter|menu|navigation|cross[-_\s]?link|card|widget)",
+    r"teaser|promo|footer|breadcrumb|newsletter|menu|navigation|cross[-_\s]?link|widget)",
     re.I,
 )
 EXCLUDED_HEADING_TEXT_HINT = re.compile(
@@ -278,9 +279,12 @@ SUSTAINABILITY_FRAMING = re.compile(
 )
 
 LOGGER = logging.getLogger(__name__)
+PIPELINE_DEBUG_ENABLED = os.getenv("GREENCHECK_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def log_pipeline_event(stage: str, block: str, **details: object) -> None:
+    if not PIPELINE_DEBUG_ENABLED:
+        return
     compact = re.sub(r"\s+", " ", block).strip()
     if len(compact) > 220:
         compact = compact[:217] + "..."
@@ -512,16 +516,21 @@ def _extract_main_article_text(html_doc: str) -> Tuple[str, Dict[str, object]]:
     hero_paragraphs: List[str] = [intro] if intro else []
     hero_block = _normalize_block_text(" ".join(part for part in [title, intro] if part))
 
+    visible_tags = {"h1", "h2", "h3", "h4", "h5", "h6", "p", "div", "span", "li", "section", "article"}
     blocks: List[str] = []
-    for node in best.find_all(["h2", "h3", "p", "li"]):
+    for node in best.find_all(list(visible_tags)):
         if _is_excluded_container(node):
             continue
         if any(_is_excluded_container(parent) for parent in node.parents if getattr(parent, "name", None)):
             continue
         if first_intro_node is not None and node == first_intro_node:
             continue
+        if node.name in {"div", "section", "article"} and node.find(list(visible_tags)):
+            continue
+        if node.name == "span" and node.find(["span", "a", "strong", "em", "small"]):
+            continue
         text = node.get_text(" ", strip=True)
-        if len(text) >= 25:
+        if len(text) >= 12:
             blocks.append(text)
 
     ordered: List[str] = []
@@ -549,7 +558,10 @@ def _extract_main_article_text(html_doc: str) -> Tuple[str, Dict[str, object]]:
         "found_better_future": "better future" in main_lower,
         "related_articles_excluded": bool(related_excluded or related_sections_removed),
         "related_sections_removed": related_sections_removed,
+        "visible_text_blocks": ordered,
     }
+    if PIPELINE_DEBUG_ENABLED:
+        LOGGER.warning("[pipeline:visible_text_blocks] %s", json.dumps(ordered, ensure_ascii=False))
     return main_text, debug
 
 
@@ -591,6 +603,37 @@ def make_sentence_blocks(text: str) -> List[str]:
     if blocks:
         return blocks
     return [normalized] if normalized else []
+
+
+def build_candidate_windows(text: str) -> List[str]:
+    blocks = [_normalize_block_text(p) for p in re.split(r"\n+", text or "") if _normalize_block_text(p)]
+    windows: List[str] = []
+    seen: Set[str] = set()
+
+    def add_window(value: str) -> None:
+        normalized = _normalize_block_text(value)
+        if len(normalized) < 20:
+            return
+        key = normalize_claim_text(normalized)
+        if not key or key in seen:
+            return
+        seen.add(key)
+        windows.append(normalized)
+
+    for idx, block in enumerate(blocks):
+        add_window(block)
+        if idx + 1 < len(blocks):
+            add_window(f"{block} {blocks[idx + 1]}")
+        if idx > 0:
+            add_window(f"{blocks[idx - 1]} {block}")
+        if idx > 0 and idx + 1 < len(blocks):
+            add_window(f"{blocks[idx - 1]} {block} {blocks[idx + 1]}")
+    add_window(" ".join(blocks))
+    for sentence in sentence_tokenize(text or ""):
+        add_window(sentence)
+    if not windows and text:
+        add_window(text)
+    return windows
 
 
 def normalize_claim_text(text: str) -> str:
@@ -790,8 +833,20 @@ def forward_target_substantiation_signal_count(text: str) -> int:
     return sum(1 for pattern in patterns if pattern.search(text or ""))
 
 
+def _target_signature(text: str) -> Tuple[str, str, str]:
+    normalized = (text or "").lower()
+    year_match = re.search(r"\b(20\d{2})\b", normalized)
+    pct_match = re.search(r"\b(\d{1,3}\s*(?:%|percent))\b", normalized)
+    subject_match = ENV_TARGET_SUBJECT.search(normalized)
+    return (
+        subject_match.group(0) if subject_match else "",
+        year_match.group(1) if year_match else "",
+        pct_match.group(1) if pct_match else "",
+    )
+
+
 def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extraction_debug: Optional[Dict[str, object]] = None) -> List[Finding]:
-    chunks = make_chunks(text)
+    chunks = build_candidate_windows(text)
     normalized_hero_block = _normalize_block_text(hero_block)
     candidate_blocks = _candidate_blocks(text, hero_block=normalized_hero_block)
     if not chunks and not candidate_blocks:
@@ -815,7 +870,7 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
         candidate_created=hero_candidate_created,
     )
 
-    sentence_blocks = sentence_tokenize(text)
+    sentence_blocks = build_candidate_windows(text)
     has_generic_substantiation = bool(GENERIC_SUBSTANTIATION_HINT.search(text))
     has_external_report_reference = bool(REPORT_REFERENCE_HINT.search(text))
     issues: List[Finding] = []
@@ -848,6 +903,12 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
             existing_norm = normalize_claim_text(existing_issue.evidence)
             is_similar = text_similarity(existing_issue.evidence, evidence) > 0.85
             has_overlap = normalized in existing_norm or existing_norm in normalized
+            if category == "FUTURE_NET_ZERO_TARGETS":
+                new_sig = _target_signature(evidence)
+                old_sig = _target_signature(existing_issue.evidence)
+                comparable = new_sig == old_sig and any(new_sig)
+                is_similar = text_similarity(existing_issue.evidence, evidence) > 0.93 if comparable else False
+                has_overlap = has_overlap and comparable
             if is_similar or has_overlap:
                 if len(normalized) > len(existing_norm):
                     issues[idx] = Finding(
@@ -933,6 +994,8 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
         )
 
         target_match = FORWARD_LOOKING_ENV_TARGET.search(chunk) or MATERIAL_TARGET.search(chunk)
+        if PIPELINE_DEBUG_ENABLED and CLIMATE_CONTEXT.search(chunk):
+            LOGGER.warning("[pipeline:future_target_candidate] %s", clean_snippet(chunk))
         if target_match or is_forward_environmental_target(chunk):
             pct_match = re.search(r"(\d{1,3}\s*(?:%|percent))", chunk, re.I)
             pct = pct_match.group(1) if pct_match else "stated target"
@@ -960,6 +1023,10 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
                 ),
                 llm_prompt=build_llm_prompt(relevant_block, taxonomy_signal),
             )
+            if PIPELINE_DEBUG_ENABLED:
+                LOGGER.warning("[pipeline:future_target_match] matched=True substantiation_signals=%s", substantiation_signals)
+        elif PIPELINE_DEBUG_ENABLED and CLIMATE_CONTEXT.search(chunk):
+            LOGGER.warning("[pipeline:future_target_match] matched=False")
 
         has_absolute_claim = bool(ABSOLUTE_CLAIMS.search(chunk))
         if has_absolute_claim:
@@ -1005,6 +1072,14 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
             or is_third_party_context
             or (is_editorial_context and not commercial_context)
         )
+        if PIPELINE_DEBUG_ENABLED and generic_gate:
+            LOGGER.warning(
+                "[pipeline:suppression_decision] blocked=%s has_report_ref=%s has_substantiation=%s third_party=%s",
+                blocked,
+                has_external_report_reference,
+                has_generic_substantiation,
+                is_third_party_context,
+            )
 
         if generic_gate and claim_subject_gate and not blocked:
             generic_candidate_created = True
@@ -1063,11 +1138,12 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
                 llm_prompt=build_llm_prompt(relevant_block, taxonomy_signal),
             )
 
-    LOGGER.warning(
-        "[pipeline:generic_claim_status] created=%s, filtered_out=%s",
-        generic_candidate_created,
-        generic_candidate_filtered,
-    )
+    if PIPELINE_DEBUG_ENABLED:
+        LOGGER.warning(
+            "[pipeline:generic_claim_status] created=%s, filtered_out=%s",
+            generic_candidate_created,
+            generic_candidate_filtered,
+        )
     final_rendered_issues = [clean_snippet(issue.evidence) for issue in issues]
     debug_payload = {
         "extracted_h1": (extraction_debug or {}).get("main_title", ""),
@@ -1082,7 +1158,8 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
     }
     if extraction_debug is not None:
         extraction_debug["claim_pipeline_debug"] = debug_payload
-    LOGGER.warning("[pipeline:debug] %s", json.dumps(debug_payload, ensure_ascii=False))
+    if PIPELINE_DEBUG_ENABLED:
+        LOGGER.warning("[pipeline:debug] %s", json.dumps(debug_payload, ensure_ascii=False))
     return issues
 
 
@@ -1098,19 +1175,20 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], 
     main_text, extraction_debug = _extract_main_article_text(html)
     if not main_text:
         main_text = html_to_text(html)
-    LOGGER.warning(
-        (
-            "[pipeline:extraction] title=%s intro=%s main_content_length=%s intro_captured=%s "
-            "found_sustainable_components=%s found_better_future=%s related_articles_excluded=%s"
-        ),
-        extraction_debug.get("main_title"),
-        extraction_debug.get("first_paragraph_after_title"),
-        extraction_debug.get("main_content_length"),
-        extraction_debug.get("intro_captured"),
-        extraction_debug.get("found_sustainable_components"),
-        extraction_debug.get("found_better_future"),
-        extraction_debug.get("related_articles_excluded"),
-    )
+    if PIPELINE_DEBUG_ENABLED:
+        LOGGER.warning(
+            (
+                "[pipeline:extraction] title=%s intro=%s main_content_length=%s intro_captured=%s "
+                "found_sustainable_components=%s found_better_future=%s related_articles_excluded=%s"
+            ),
+            extraction_debug.get("main_title"),
+            extraction_debug.get("first_paragraph_after_title"),
+            extraction_debug.get("main_content_length"),
+            extraction_debug.get("intro_captured"),
+            extraction_debug.get("found_sustainable_components"),
+            extraction_debug.get("found_better_future"),
+            extraction_debug.get("related_articles_excluded"),
+        )
     text = main_text
     all_findings: List[Finding] = find_issues_on_page(
         start_url,
