@@ -366,6 +366,7 @@ def extract_rendered_text_with_playwright(
         "text": "",
         "playwright_used": True,
         "playwright_error": None,
+        "chromium_path": None,
     }
     try:
         from playwright.sync_api import sync_playwright
@@ -386,6 +387,7 @@ def extract_rendered_text_with_playwright(
     try:
         with sync_playwright() as p:
             chromium_executable: Optional[str] = _detect_chromium_executable()
+            result["chromium_path"] = chromium_executable
             launch_kwargs: Dict[str, Any] = {
                 "headless": True,
                 "args": ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"],
@@ -393,6 +395,8 @@ def extract_rendered_text_with_playwright(
             if chromium_executable:
                 launch_kwargs["executable_path"] = chromium_executable
                 LOGGER.warning("[extraction] mode=PLAYWRIGHT using_system_chromium=%s", chromium_executable)
+            else:
+                LOGGER.warning("[extraction] mode=PLAYWRIGHT using_system_chromium=not_found")
             browser = p.chromium.launch(
                 **launch_kwargs,
             )
@@ -1416,6 +1420,7 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], 
     extraction_mode = "STATIC"
     playwright_used = False
     playwright_error: Optional[str] = None
+    chromium_path: Optional[str] = None
     rendered_text = ""
     if not html:
         LOGGER.warning("STATIC FAILED → switching to PLAYWRIGHT")
@@ -1429,6 +1434,7 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], 
             LOGGER.warning("[extraction] fallback_triggered=true reason=static_fetch_failed")
         playwright_result = extract_rendered_text_with_playwright(start_url)
         rendered_text, playwright_error = _coerce_playwright_result(playwright_result)
+        chromium_path = playwright_result.get("chromium_path") if isinstance(playwright_result, dict) else None
         if not rendered_text:
             extraction_warnings.append(RENDER_WARNING)
             return 1, [], {
@@ -1437,22 +1443,35 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], 
                 "extraction_mode": extraction_mode,
                 "playwright_used": playwright_used,
                 "playwright_error": playwright_error,
+                "chromium_path": chromium_path,
+                "extracted_text_length": 0,
+                "greenhouse_gas_in_text": False,
+                "contains_55_percent_token": False,
+                "contains_2030_token": False,
             }
+        rendered_lower = rendered_text.lower()
         extraction_debug = {
             "rendered_fallback_used": True,
             "extraction_mode": extraction_mode,
             "rendered_text_length": len(rendered_text),
-            "greenhouse_gas_in_text": "greenhouse gas" in rendered_text.lower(),
+            "extracted_text_length": len(rendered_text),
+            "greenhouse_gas_in_text": "greenhouse gas" in rendered_lower,
+            "contains_55_percent_token": ("55%" in rendered_lower or "55 %" in rendered_lower),
+            "contains_2030_token": "2030" in rendered_lower,
             "http_status": status_code,
             "playwright_used": playwright_used,
             "playwright_error": playwright_error,
+            "chromium_path": chromium_path,
             "warnings": extraction_warnings,
         }
         LOGGER.warning(
-            "[extraction] mode=%s extracted_text_length=%s greenhouse_gas_present=%s",
+            "[extraction] mode=%s extracted_text_length=%s greenhouse_gas_present=%s contains_55_percent=%s contains_2030=%s chromium_path=%s",
             extraction_debug["extraction_mode"],
-            extraction_debug["rendered_text_length"],
+            extraction_debug["extracted_text_length"],
             extraction_debug["greenhouse_gas_in_text"],
+            extraction_debug["contains_55_percent_token"],
+            extraction_debug["contains_2030_token"],
+            extraction_debug["chromium_path"] or "not_found",
         )
         extraction_debug["future_target_trace"] = build_future_target_debug(rendered_text)
         findings = find_issues_on_page(start_url, rendered_text, extraction_debug=extraction_debug)
@@ -1476,6 +1495,7 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], 
         playwright_used = True
         playwright_result = extract_rendered_text_with_playwright(start_url)
         rendered_text, playwright_error = _coerce_playwright_result(playwright_result)
+        chromium_path = playwright_result.get("chromium_path") if isinstance(playwright_result, dict) else None
         if rendered_text:
             main_text = rendered_text
             extraction_debug["rendered_fallback_used"] = True
@@ -1487,6 +1507,7 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], 
     extraction_debug["http_status"] = status_code
     extraction_debug["playwright_used"] = playwright_used
     extraction_debug["playwright_error"] = playwright_error
+    extraction_debug["chromium_path"] = chromium_path
     extraction_debug["rendered_text_length"] = len(rendered_text or "")
     extraction_debug["extracted_text_length"] = len(main_text or "")
     extraction_debug["greenhouse_gas_in_text"] = "greenhouse gas" in (main_text or "").lower()
@@ -1495,6 +1516,8 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], 
     contains_emissions = "emissions" in lower_text
     contains_55 = "55%" in lower_text or "55 %" in lower_text
     contains_2030 = "2030" in lower_text
+    extraction_debug["contains_55_percent_token"] = contains_55
+    extraction_debug["contains_2030_token"] = contains_2030
     extraction_debug["contains_target_claim"] = bool(contains_greenhouse and contains_emissions and contains_55 and contains_2030)
     LOGGER.warning(
         "[extraction] target_claim_tokens greenhouse=%s emissions=%s 55_percent=%s 2030=%s",
@@ -1505,10 +1528,13 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], 
     )
     LOGGER.warning("[extraction] extracted_text_preview_500=%s", (main_text or "")[:500])
     LOGGER.warning(
-        "[extraction] mode=%s extracted_text_length=%s greenhouse_gas_present=%s fallback_reason=%s",
+        "[extraction] mode=%s extracted_text_length=%s greenhouse_gas_present=%s contains_55_percent=%s contains_2030=%s chromium_path=%s fallback_reason=%s",
         extraction_debug["extraction_mode"],
         extraction_debug["extracted_text_length"],
         extraction_debug["greenhouse_gas_in_text"],
+        extraction_debug["contains_55_percent_token"],
+        extraction_debug["contains_2030_token"],
+        extraction_debug["chromium_path"] or "not_found",
         ",".join(fallback_reason) if fallback_reason else "n/a",
     )
     if PIPELINE_DEBUG_ENABLED:
