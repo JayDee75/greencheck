@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+import re
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -12,8 +13,10 @@ from app.main import (
     _extract_main_article_text,
     clean_snippet,
     find_issues_on_page,
+    make_display_snippet,
     normalize_extracted_text,
     scan_site,
+    templates,
 )
 
 
@@ -389,6 +392,47 @@ def test_issue_snippet_is_compact_and_never_exceeds_400_chars():
     assert len(future[0].evidence) < 400
     assert future[0].evidence.startswith("...")
     assert future[0].evidence.endswith("...")
+
+
+def test_make_display_snippet_extracts_future_target_phrase_window():
+    text = (
+        "Home Menu Search Contact "
+        "Our ESG Ambitions Environment Reduce greenhouse gas emissions by at least 55% by 2030, "
+        "aligning with the EU's Green Deal and international environmental regulations. "
+        "Cookie settings Privacy"
+    )
+    snippet = make_display_snippet(
+        text,
+        keywords=["Our ESG Ambitions", "Reduce greenhouse gas emissions", "greenhouse gas emissions", "55%", "2030"],
+        max_len=350,
+    )
+    assert len(snippet) <= 400
+    assert "Reduce greenhouse gas emissions by at least 55% by 2030" in snippet
+    assert snippet.startswith("...")
+    assert snippet.endswith("...")
+
+
+def test_report_template_defensively_truncates_detected_claim_box_to_max_400_characters():
+    long_claim = "Reduce greenhouse gas emissions by at least 55% by 2030. " + ("extra context " * 120)
+    response = templates.get_template("report.html").render(
+        request=None,
+        target_url="https://example.com",
+        input_url="https://example.com",
+        pages_scanned=1,
+        risk_score=50,
+        warnings=[],
+        findings=[{"title": "Forward-looking environmental performance target", "severity": "medium", "display_snippet": long_claim, "rule": RULEBOOK["FUTURE_TARGET"], "recommendation": "Add substantiation details.", "page_url_readable": True, "page_url": "https://example.com", "page_url_label": "https://example.com"}],
+        findings_high=[],
+        findings_medium=[{}],
+    )
+    assert "Reduce greenhouse gas emissions by at least 55% by 2030" in response
+    assert long_claim not in response
+    match = re.search(
+        r'<div class="issue-k">Detected claim</div>\s*<div class="issue-box">([^<]+)</div>',
+        response,
+    )
+    assert match
+    assert len(match.group(1)) <= 400
 
 
 def test_duplicate_generic_claims_are_fuzzy_deduplicated():

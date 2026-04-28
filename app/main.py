@@ -831,6 +831,37 @@ def _truncate_snippet_with_ellipses(text: str, *, max_len: int = 330) -> str:
     return f"...{cleaned}..." if cleaned else ""
 
 
+FUTURE_TARGET_DISPLAY_KEYWORDS = [
+    "Our ESG Ambitions",
+    "Reduce greenhouse gas emissions",
+    "greenhouse gas emissions",
+    "55%",
+    "2030",
+]
+
+
+def make_display_snippet(text: str, keywords: List[str], max_len: int = 350) -> str:
+    clean = re.sub(r"\s+", " ", clean_snippet(text or "")).strip()
+    if not clean:
+        return ""
+    lower = clean.lower()
+    hit = -1
+    for kw in keywords:
+        hit = lower.find(kw.lower())
+        if hit >= 0:
+            break
+    if hit < 0:
+        snippet = clean[:max_len]
+    else:
+        start = max(0, hit - 80)
+        end = min(len(clean), hit + 260)
+        snippet = clean[start:end]
+    snippet = snippet.strip()
+    if len(snippet) > max_len:
+        snippet = snippet[:max_len].rsplit(" ", 1)[0] or snippet[:max_len]
+    return f"...{snippet}..."
+
+
 def _future_target_snippet_score(candidate: str) -> int:
     normalized = (candidate or "").lower()
     score = 0
@@ -1742,6 +1773,8 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
     def to_template_finding(f: Finding) -> dict:
         readable_source = is_readable_http_url(f.url)
         rule_text = RULEBOOK.get(f.category, "Detected Rule Violation: The claim is not sufficiently clear, accurate, and verifiable.")
+        display_keywords = FUTURE_TARGET_DISPLAY_KEYWORDS if f.category in {"FUTURE_TARGET", "FUTURE_NET_ZERO_TARGETS"} else []
+        display_snippet = make_display_snippet(f.evidence, display_keywords, max_len=350)
         if f.category == "GENERIC_ENVIRONMENTAL_CLAIMS":
             detected_keywords = sorted(
                 {
@@ -1773,7 +1806,7 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
         return {
             "title": CATEGORY_LABELS.get(f.category, f.category.replace("_", " ").title()),
             "severity": f.severity,
-            "snippet": f.evidence,
+            "display_snippet": display_snippet,
             "page_url": f.url,
             "page_url_readable": readable_source,
             "page_url_label": (
