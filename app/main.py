@@ -1707,26 +1707,32 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
 
 
 @app.get("/debug/scan-json")
-async def debug_scan_json(url: str, max_pages: int = 10):
-    if not ADMIN_DEBUG_ENABLED:
-        return {"enabled": False}
+def debug_scan_json(url: str, max_pages: int = 10):
     target = normalize_url(url)
     pages_scanned, findings_obj, extraction_debug = scan_site(target, max_pages=max_pages)
     claim_debug = extraction_debug.get("claim_pipeline_debug", {}) if isinstance(extraction_debug, dict) else {}
     future_debug = extraction_debug.get("future_target_trace", {}) if isinstance(extraction_debug, dict) else {}
+    finding_types = [f.category for f in findings_obj]
     return {
-        "enabled": True,
-        "extractionMode": extraction_debug.get("extraction_mode", "STATIC"),
-        "httpStatus": extraction_debug.get("http_status"),
-        "playwrightUsed": bool(extraction_debug.get("playwright_used", False)),
-        "playwrightError": extraction_debug.get("playwright_error"),
-        "extractedTextLength": int(extraction_debug.get("extracted_text_length", 0) or 0),
-        "containsTargetClaim": bool(extraction_debug.get("contains_target_claim", False)),
+        "enabled": bool(ADMIN_DEBUG_ENABLED),
+        "extraction_mode": extraction_debug.get("extraction_mode", "STATIC"),
+        "static_http_status": extraction_debug.get("http_status"),
+        "playwright_used": bool(extraction_debug.get("playwright_used", False)),
+        "detected_chromium_path": extraction_debug.get("chromium_path"),
+        "playwright_error": extraction_debug.get("playwright_error"),
+        "extracted_text_length": int(extraction_debug.get("extracted_text_length", 0) or 0),
+        "contains_greenhouse": bool(extraction_debug.get("contains_greenhouse_token", False)),
+        "contains_emissions": bool(extraction_debug.get("contains_emissions_token", False)),
+        "contains_55_percent": bool(extraction_debug.get("contains_55_percent_token", False)),
+        "contains_2030": bool(extraction_debug.get("contains_2030_token", False)),
+        "contains_target_claim": bool(extraction_debug.get("contains_target_claim", False)),
+        "findings_count": len(findings_obj),
+        "finding_types": sorted(set(finding_types)),
         "pages_scanned": pages_scanned,
-        "extractedText": future_debug.get("extracted_text_preview", ""),
-        "candidateWindows": future_debug.get("future_target_candidate_windows", []),
-        "matchedRules": [f.category for f in findings_obj],
-        "suppressedRules": claim_debug.get("suppressed_or_deduplicated", []),
+        "extracted_text_preview": future_debug.get("extracted_text_preview", ""),
+        "candidate_windows": future_debug.get("future_target_candidate_windows", []),
+        "matched_rules": finding_types,
+        "suppressed_rules": claim_debug.get("suppressed_or_deduplicated", []),
         "warnings": extraction_debug.get("warnings", []),
     }
 
