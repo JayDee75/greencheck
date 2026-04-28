@@ -914,6 +914,37 @@ def has_environmental_keyword_signal(text: str) -> bool:
     return any(pattern.search(normalized) for pattern in keyword_patterns)
 
 
+STRONG_FUTURE_TARGET_SIGNAL_PATTERNS = [
+    re.compile(r"\bgreenhouse\s*gas\b", re.I),
+    re.compile(r"\bghg\b", re.I),
+    re.compile(r"\bemissions?\b", re.I),
+    re.compile(r"\bco2\b", re.I),
+    re.compile(r"\bco₂\b", re.I),
+    re.compile(r"\bcarbon\b", re.I),
+    re.compile(r"\b55\s*%\b", re.I),
+    re.compile(r"\b2030\b", re.I),
+    re.compile(r"\breduce\s+greenhouse\s+gas\s+emissions\b", re.I),
+    re.compile(r"\bnet\s*zero\b", re.I),
+    re.compile(r"\bclimate\s*neutral\b", re.I),
+    re.compile(r"\bcarbon\s*neutral\b", re.I),
+    re.compile(r"\brenewable\s+electricity\b", re.I),
+    re.compile(r"\bplastic[-\s]?free\b", re.I),
+    re.compile(r"\bzero\s+waste\b", re.I),
+]
+
+
+def has_strong_future_target_signal(text: str) -> bool:
+    normalized = text or ""
+    return any(pattern.search(normalized) for pattern in STRONG_FUTURE_TARGET_SIGNAL_PATTERNS)
+
+
+def merge_extracted_text(static_text: str, rendered_text: str) -> str:
+    merged_parts = [part for part in [static_text, rendered_text] if (part or "").strip()]
+    if not merged_parts:
+        return ""
+    return normalize_extracted_text("\n".join(merged_parts))
+
+
 def hero_signal_groups(block: str) -> Dict[str, List[str]]:
     groups = {
         "A_sustainability_responsibility": sorted(set(m.group(0).lower() for m in HERO_SUSTAINABILITY_SIGNAL.finditer(block))),
@@ -1488,16 +1519,19 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], 
     if not has_environmental_keyword_signal(main_text):
         fallback_reason.append("missing_environmental_keywords")
 
+    if not has_strong_future_target_signal(main_text):
+        fallback_reason.append("missing_strong_future_target_signal")
+
     if fallback_reason:
         LOGGER.warning("STATIC FAILED → switching to PLAYWRIGHT")
         LOGGER.warning("[extraction] fallback_triggered=true reason=%s", ",".join(fallback_reason))
-        extraction_mode = "PLAYWRIGHT"
+        extraction_mode = "PLAYWRIGHT_FALLBACK" if not main_text else "STATIC+PLAYWRIGHT"
         playwright_used = True
         playwright_result = extract_rendered_text_with_playwright(start_url)
         rendered_text, playwright_error = _coerce_playwright_result(playwright_result)
         chromium_path = playwright_result.get("chromium_path") if isinstance(playwright_result, dict) else None
         if rendered_text:
-            main_text = rendered_text
+            main_text = merge_extracted_text(main_text, rendered_text)
             extraction_debug["rendered_fallback_used"] = True
             extraction_debug["rendered_fallback_reason"] = fallback_reason
         else:
