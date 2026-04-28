@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 import sys
 
@@ -188,6 +189,27 @@ def test_scan_returns_warning_if_static_and_playwright_fail(monkeypatch):
     assert pages == 1
     assert findings == []
     assert RENDER_WARNING in debug["warnings"]
+
+
+def test_scan_debug_avoids_sync_playwright_loop_error(monkeypatch):
+    monkeypatch.setattr("app.main.fetch_html", lambda *_args, **_kwargs: (None, 403))
+
+    async def fake_playwright(*_args, **_kwargs):
+        return {
+            "text": "Reduce greenhouse gas emissions by at least 55% by 2030.",
+            "playwright_used": True,
+            "playwright_error": None,
+            "chromium_path": "/usr/bin/chromium",
+        }
+
+    monkeypatch.setattr("app.main.extract_rendered_text_with_playwright", fake_playwright)
+
+    _, findings, debug = scan_site("https://example.com/esg")
+
+    assert debug["playwright_used"] is True
+    assert debug["extraction_mode"] == "PLAYWRIGHT"
+    assert "Sync API inside the asyncio loop" not in (debug.get("playwright_error") or "")
+    assert any(f.category in {"FUTURE_TARGET", "FUTURE_NET_ZERO_TARGETS"} for f in findings)
 
 
 def test_main_article_extraction_prioritizes_intro_and_excludes_related_teasers():
@@ -588,43 +610,43 @@ def test_extract_rendered_text_uses_detected_system_chromium(monkeypatch):
     launch_calls = []
 
     class DummyPage:
-        def goto(self, *_args, **_kwargs):
+        async def goto(self, *_args, **_kwargs):
             class Response:
                 status = 200
 
             return Response()
 
-        def wait_for_load_state(self, *_args, **_kwargs):
+        async def wait_for_load_state(self, *_args, **_kwargs):
             return None
 
-        def wait_for_selector(self, *_args, **_kwargs):
+        async def wait_for_selector(self, *_args, **_kwargs):
             return None
 
-        def wait_for_function(self, *_args, **_kwargs):
+        async def wait_for_function(self, *_args, **_kwargs):
             return None
 
-        def wait_for_timeout(self, *_args, **_kwargs):
+        async def wait_for_timeout(self, *_args, **_kwargs):
             return None
 
-        def evaluate(self, *_args, **_kwargs):
+        async def evaluate(self, *_args, **_kwargs):
             return "Reduce greenhouse gas emissions by at least 55% by 2030."
 
     class DummyContext:
-        def new_page(self):
+        async def new_page(self):
             return DummyPage()
 
-        def close(self):
+        async def close(self):
             return None
 
     class DummyBrowser:
-        def new_context(self, **_kwargs):
+        async def new_context(self, **_kwargs):
             return DummyContext()
 
-        def close(self):
+        async def close(self):
             return None
 
     class DummyChromium:
-        def launch(self, **kwargs):
+        async def launch(self, **kwargs):
             launch_calls.append(kwargs)
             return DummyBrowser()
 
@@ -632,17 +654,17 @@ def test_extract_rendered_text_uses_detected_system_chromium(monkeypatch):
         chromium = DummyChromium()
 
     class DummyManager:
-        def __enter__(self):
+        async def __aenter__(self):
             return DummyPlaywright()
 
-        def __exit__(self, exc_type, exc, tb):
+        async def __aexit__(self, exc_type, exc, tb):
             return False
 
-    monkeypatch.setattr("playwright.sync_api.sync_playwright", lambda: DummyManager())
+    monkeypatch.setattr("playwright.async_api.async_playwright", lambda: DummyManager())
     monkeypatch.setattr("app.main._detect_chromium_executable", lambda: "/usr/bin/chromium")
     from app.main import extract_rendered_text_with_playwright
 
-    result = extract_rendered_text_with_playwright("https://example.com")
+    result = asyncio.run(extract_rendered_text_with_playwright("https://example.com"))
 
     assert result["text"]
     assert result["playwright_error"] is None
