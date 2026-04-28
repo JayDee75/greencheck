@@ -6,6 +6,7 @@ services:
     region: frankfurt
     branch: main
     dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
     envVars:
       - key: PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
         value: /usr/bin/chromium
