@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import string
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -71,7 +72,10 @@ ENV_TARGET_DEADLINE = re.compile(
 BASELINE_SIGNAL = re.compile(r"\b(baseline\s*year|base\s*year|reference\s*year|referentiejaar|basisjaar)\b", re.I)
 PROGRESS_SIGNAL = re.compile(r"\b(progress|on\s+track|achieved|reduced\s+by|year[-\s]?on[-\s]?year)\b", re.I)
 SCOPE_SIGNAL = re.compile(r"\b(scope\s*1|scope\s*2|scope\s*3|boundary|inventory\s+boundary)\b", re.I)
-METHOD_SIGNAL = re.compile(r"\b(ghg\s*protocol|sbti|science[-\s]?based|iso\s*14064|lca|methodolog(?:y|ie)|standard)\b", re.I)
+METHOD_SIGNAL = re.compile(
+    r"\b(ghg\s*protocol|sbti|science[-\s]?based|iso\s*14064|lca|methodolog(?:y|ie)|standard|green\s*deal|environmental\s+regulations?)\b",
+    re.I,
+)
 MILESTONE_SIGNAL = re.compile(r"\b(interim\s+target|milestone|roadmap|transition\s+plan|phase)\b", re.I)
 IMPLEMENTATION_SIGNAL = re.compile(r"\b(implementation|measure|action\s+plan|capex|opex|investment|program(?:me)?)\b", re.I)
 GOVERNANCE_SIGNAL = re.compile(r"\b(governance|board|owner|accountab(?:le|ility)|responsib(?:le|ility))\b", re.I)
@@ -231,6 +235,12 @@ RULEBOOK = {
         "Detected Rule Violation: This is a product/service-level carbon neutrality style claim presented without a clear, "
         "auditable basis and boundaries, creating a high risk of misleading neutrality messaging."
     ),
+    "FUTURE_TARGET": (
+        "FUTURE_TARGET: This is a forward-looking environmental target (emissions reduction by 2030). Under the EmpCo Directive, such claims must "
+        "be supported by a clear, publicly available and verifiable implementation plan (e.g., defined baseline year and scope, interim milestones, "
+        "measures/actions, governance, and independent verification such as SBTi validation). In the provided page text, the target is stated but no "
+        "concrete, independently verified roadmap is included alongside the claim."
+    ),
     "FUTURE_NET_ZERO_TARGETS": (
         "This is a forward-looking environmental performance target. Under EmpCo/ECGT rules, future environmental claims must "
         "be supported by a clear, publicly available and verifiable implementation plan. The claim includes an environmental target "
@@ -246,6 +256,7 @@ RULEBOOK = {
 CATEGORY_LABELS = {
     "GENERIC_ENVIRONMENTAL_CLAIMS": "Generic Environmental Claim",
     "CARBON_NEUTRALITY_CLAIMS": "Carbon Neutrality Claim",
+    "FUTURE_TARGET": "Forward-looking environmental performance target",
     "FUTURE_NET_ZERO_TARGETS": "Forward-looking environmental performance target",
     "SUSTAINABILITY_LABELS": "Sustainability Label",
 }
@@ -280,6 +291,52 @@ SUSTAINABILITY_FRAMING = re.compile(
 
 LOGGER = logging.getLogger(__name__)
 PIPELINE_DEBUG_ENABLED = os.getenv("GREENCHECK_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+ADMIN_DEBUG_ENABLED = os.getenv("GREENCHECK_ADMIN_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def get_git_commit_hash() -> str:
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, timeout=2).strip()
+    except Exception:
+        return "unknown"
+
+
+def extract_rendered_text_with_playwright(url: str, timeout_ms: int = 18000) -> str:
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:
+        return ""
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+            page.wait_for_timeout(2000)
+            inner_text = page.evaluate("() => document?.body?.innerText || ''")
+            browser.close()
+            return _normalize_block_text(inner_text)
+    except Exception:
+        return ""
+
+
+def build_future_target_debug(text: str) -> Dict[str, object]:
+    windows = build_candidate_windows(text)
+    matched_windows = [
+        w for w in windows if (FORWARD_LOOKING_ENV_TARGET.search(w) or MATERIAL_TARGET.search(w) or is_forward_environmental_target(w))
+    ]
+    return {
+        "git_commit_hash": get_git_commit_hash(),
+        "extracted_text_length": len(text or ""),
+        "extracted_text_preview": (text or "")[:3000],
+        "contains_greenhouse_gas": "greenhouse gas" in (text or "").lower(),
+        "contains_55_percent": bool(re.search(r"55\\s*%", text or "", re.I)),
+        "contains_2030": "2030" in (text or ""),
+        "contains_reduce_greenhouse_gas_emissions": "reduce greenhouse gas emissions" in (text or "").lower(),
+        "future_target_candidate_windows": windows,
+        "future_target_match_result": bool(matched_windows),
+        "future_target_matched_windows": matched_windows,
+    }
 
 
 def log_pipeline_event(stage: str, block: str, **details: object) -> None:
@@ -876,6 +933,7 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
     issues: List[Finding] = []
     seen: Set[Tuple[str, str]] = set()
     seen_claims_by_category: Dict[str, List[str]] = {}
+    dedup_events: List[str] = []
 
     def nearby_forward_substantiation_count(chunk: str) -> int:
         chunk_key = normalize_claim_text(chunk)
@@ -903,13 +961,14 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
             existing_norm = normalize_claim_text(existing_issue.evidence)
             is_similar = text_similarity(existing_issue.evidence, evidence) > 0.85
             has_overlap = normalized in existing_norm or existing_norm in normalized
-            if category == "FUTURE_NET_ZERO_TARGETS":
+            if category in {"FUTURE_TARGET", "FUTURE_NET_ZERO_TARGETS"}:
                 new_sig = _target_signature(evidence)
                 old_sig = _target_signature(existing_issue.evidence)
                 comparable = new_sig == old_sig and any(new_sig)
                 is_similar = text_similarity(existing_issue.evidence, evidence) > 0.93 if comparable else False
                 has_overlap = has_overlap and comparable
             if is_similar or has_overlap:
+                dedup_events.append(f"merged:{category}")
                 if len(normalized) > len(existing_norm):
                     issues[idx] = Finding(
                         category=category,
@@ -925,6 +984,7 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
                 return
         existing_claims = seen_claims_by_category.setdefault(category, [])
         if any(text_similarity(existing, evidence) > 0.85 for existing in existing_claims):
+            dedup_events.append(f"suppressed_similarity:{category}")
             return
         seen.add(key)
         existing_claims.append(evidence)
@@ -1005,21 +1065,20 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
                 nearby_forward_substantiation_count(chunk),
                 forward_target_substantiation_signal_count(text),
             )
-            severity = "medium" if substantiation_signals >= 3 else "high"
-            message = RULEBOOK["FUTURE_NET_ZERO_TARGETS"]
+            severity = "medium" if substantiation_signals >= 1 else "high"
+            message = RULEBOOK["FUTURE_TARGET"]
             add_issue(
                 category="FUTURE_NET_ZERO_TARGETS",
                 severity=severity,
                 message=message,
                 evidence=clean_snippet(chunk),
                 how_to_fix=(
-                    "Add a substantiation package next to the claim or via a clearly linked page, including: "
-                    "1. baseline year and full environmental inventory boundary, such as Scopes 1, 2, and relevant Scope 3 categories "
-                    "for GHG claims 2. methodology or standard used, such as GHG Protocol, SBTi, ISO 14064, LCA, or another relevant "
-                    "recognised method 3. current progress against the baseline 4. interim targets and milestones 5. specific measures "
-                    "to achieve the target 6. progress reporting cadence and governance 7. independent third-party verification or "
-                    "assurance statement. If these elements are not available, soften the wording, for example 'we aim to reduce...' "
-                    "or 'we are working toward...', and avoid presenting the target as a firm or fully substantiated commitment."
+                    "Add a substantiated transition plan next to the target (or link prominently to it) including: "
+                    "(1) baseline year and emissions scopes covered (Scope 1/2/3) and calculation methodology, "
+                    "(2) interim targets (e.g., 2026/2028) and specific measures (energy procurement, fleet, travel, supplier engagement), "
+                    "(3) progress reporting with KPIs, (4) third-party verification/assurance and/or SBTi validation. "
+                    "If such a plan is not available, rephrase to a non-committal statement (e.g., 'we aim to reduce emissions') "
+                    "and avoid presenting it as a defined target."
                 ),
                 llm_prompt=build_llm_prompt(relevant_block, taxonomy_signal),
             )
@@ -1028,6 +1087,7 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
         elif PIPELINE_DEBUG_ENABLED and CLIMATE_CONTEXT.search(chunk):
             LOGGER.warning("[pipeline:future_target_match] matched=False")
 
+        has_future_target = bool(FORWARD_LOOKING_ENV_TARGET.search(chunk) or MATERIAL_TARGET.search(chunk) or is_forward_environmental_target(chunk))
         has_absolute_claim = bool(ABSOLUTE_CLAIMS.search(chunk))
         if has_absolute_claim:
             severity = "high" if OFFSET_HINT.search(chunk) else "medium"
@@ -1071,7 +1131,7 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
             or non_environmental_sustainable
             or is_third_party_context
             or (is_editorial_context and not commercial_context)
-        )
+        ) and not has_future_target
         if PIPELINE_DEBUG_ENABLED and generic_gate:
             LOGGER.warning(
                 "[pipeline:suppression_decision] blocked=%s has_report_ref=%s has_substantiation=%s third_party=%s",
@@ -1081,7 +1141,7 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
                 is_third_party_context,
             )
 
-        if generic_gate and claim_subject_gate and not blocked:
+        if generic_gate and claim_subject_gate and not blocked and not has_future_target:
             generic_candidate_created = True
             log_pipeline_event("sent_to_llm", relevant_block, category="GENERIC_ENVIRONMENTAL_CLAIMS")
             claim_text = generic_match.group(0) if generic_match else "broad sustainability framing"
@@ -1155,6 +1215,7 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
         "candidates_before_filtering": pre_filter_candidates,
         "filtered_out_candidates_after_filtering": filtered_after_materiality,
         "final_rendered_issues": final_rendered_issues,
+        "suppressed_or_deduplicated": dedup_events,
     }
     if extraction_debug is not None:
         extraction_debug["claim_pipeline_debug"] = debug_payload
@@ -1171,10 +1232,27 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], 
     session = requests.Session()
     html = fetch_html(start_url, session=session)
     if not html:
-        return 1, [], {}
+        rendered_text = extract_rendered_text_with_playwright(start_url)
+        if not rendered_text:
+            return 1, [], {}
+        extraction_debug = {"rendered_fallback_used": True, "rendered_text_length": len(rendered_text)}
+        extraction_debug["future_target_trace"] = build_future_target_debug(rendered_text)
+        findings = find_issues_on_page(start_url, rendered_text, extraction_debug=extraction_debug)
+        return 1, findings, extraction_debug
     main_text, extraction_debug = _extract_main_article_text(html)
     if not main_text:
         main_text = html_to_text(html)
+    rendered_text = extract_rendered_text_with_playwright(start_url)
+    if rendered_text:
+        should_prefer_rendered = (
+            len(rendered_text) > len(main_text) + 250
+            or ("greenhouse gas" in rendered_text.lower() and "greenhouse gas" not in main_text.lower())
+            or ("2030" in rendered_text and "2030" not in main_text)
+        )
+        if should_prefer_rendered:
+            main_text = rendered_text
+            extraction_debug["rendered_fallback_used"] = True
+    extraction_debug["rendered_text_length"] = len(rendered_text or "")
     if PIPELINE_DEBUG_ENABLED:
         LOGGER.warning(
             (
@@ -1190,6 +1268,21 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], 
             extraction_debug.get("related_articles_excluded"),
         )
     text = main_text
+    future_debug = build_future_target_debug(text)
+    extraction_debug["future_target_trace"] = future_debug
+    LOGGER.warning(
+        "[future-target-trace] commit=%s text_len=%s contains_greenhouse_gas=%s contains_55_percent=%s contains_2030=%s contains_reduce_phrase=%s matched=%s",
+        future_debug["git_commit_hash"],
+        future_debug["extracted_text_length"],
+        future_debug["contains_greenhouse_gas"],
+        future_debug["contains_55_percent"],
+        future_debug["contains_2030"],
+        future_debug["contains_reduce_greenhouse_gas_emissions"],
+        future_debug["future_target_match_result"],
+    )
+    LOGGER.warning("[future-target-trace] extracted_preview=%s", future_debug["extracted_text_preview"])
+    LOGGER.warning("[future-target-trace] candidate_windows=%s", json.dumps(future_debug["future_target_candidate_windows"], ensure_ascii=False))
+
     all_findings: List[Finding] = find_issues_on_page(
         start_url,
         text,
@@ -1198,11 +1291,22 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], 
     )
 
     dedup = {}
+    dropped_by_dedup = []
     for finding in all_findings:
         normalized_evidence = re.sub(r"\s+", " ", finding.evidence.lower()).strip()
         key = (finding.category, normalized_evidence[:180])
+        if key in dedup:
+            dropped_by_dedup.append(f"{finding.category}:{finding.evidence[:80]}")
         dedup[key] = finding
     findings = list(dedup.values())
+    future_findings = [f for f in findings if f.category in {"FUTURE_TARGET", "FUTURE_NET_ZERO_TARGETS"}]
+    if not future_findings:
+        candidate_future = [f for f in all_findings if f.category in {"FUTURE_TARGET", "FUTURE_NET_ZERO_TARGETS"}]
+        if candidate_future:
+            findings.append(candidate_future[0])
+            LOGGER.warning("[future-target-trace] restored_future_target_after_dedup=true")
+    extraction_debug["dedup_suppression"] = dropped_by_dedup
+    LOGGER.warning("[future-target-trace] suppressed_or_deduplicated=%s", json.dumps(dropped_by_dedup, ensure_ascii=False))
 
     severity_rank = {"high": 0, "medium": 1, "low": 2}
     findings.sort(key=lambda f: (severity_rank.get(f.severity, 3), f.category, f.url))
@@ -1297,6 +1401,24 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
     }
 
     return templates.TemplateResponse("report.html", context)
+
+
+@app.get("/debug/scan-json")
+async def debug_scan_json(url: str, max_pages: int = 10):
+    if not ADMIN_DEBUG_ENABLED:
+        return {"enabled": False}
+    target = normalize_url(url)
+    pages_scanned, findings_obj, extraction_debug = scan_site(target, max_pages=max_pages)
+    claim_debug = extraction_debug.get("claim_pipeline_debug", {}) if isinstance(extraction_debug, dict) else {}
+    future_debug = extraction_debug.get("future_target_trace", {}) if isinstance(extraction_debug, dict) else {}
+    return {
+        "enabled": True,
+        "pages_scanned": pages_scanned,
+        "extractedText": future_debug.get("extracted_text_preview", ""),
+        "candidateWindows": future_debug.get("future_target_candidate_windows", []),
+        "matchedRules": [f.category for f in findings_obj],
+        "suppressedRules": claim_debug.get("suppressed_or_deduplicated", []),
+    }
 
 
 @app.get("/health")
