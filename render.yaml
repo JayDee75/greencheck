@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: greencheck
+    env: docker
+    plan: free
+    region: frankfurt
+    branch: main
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
+        value: /usr/bin/chromium
+      - key: GREENCHECK_ADMIN_DEBUG
+        value: "1"
