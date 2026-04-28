@@ -365,11 +365,30 @@ def test_integration_mocked_extracted_text_contains_expected_future_target_detai
     findings = find_issues_on_page("https://example.com/integration", extracted_text)
     assert len(findings) == 1
     finding = findings[0]
-    assert finding.evidence == extracted_text
+    assert finding.evidence.startswith("...")
+    assert finding.evidence.endswith("...")
+    assert "55% by 2030" in finding.evidence
     assert finding.category == "FUTURE_NET_ZERO_TARGETS"
     assert finding.severity == "medium"
     assert finding.message == RULEBOOK["FUTURE_TARGET"]
     assert "baseline year and emissions scopes" in finding.how_to_fix
+
+
+def test_issue_snippet_is_compact_and_never_exceeds_400_chars():
+    long_text = " ".join(
+        [
+            "Home Menu Search",
+            "Our ESG Ambitions Environment Reduce greenhouse gas emissions by at least 55% by 2030, aligning with the EU's Green Deal and international environmental regulations.",
+            "Contact Privacy Cookie settings",
+        ]
+        * 8
+    )
+    findings = find_issues_on_page("https://example.com/esg", long_text)
+    future = [f for f in findings if f.category == "FUTURE_NET_ZERO_TARGETS"]
+    assert future
+    assert len(future[0].evidence) < 400
+    assert future[0].evidence.startswith("...")
+    assert future[0].evidence.endswith("...")
 
 
 def test_duplicate_generic_claims_are_fuzzy_deduplicated():

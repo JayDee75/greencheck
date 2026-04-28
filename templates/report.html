@@ -86,13 +86,13 @@
           <div class="issue-head">
             <div class="issue-title">
               <span class="issue-no">Issue #{{ loop.index }}</span>
-              <span class="issue-name">{{ f.label }}</span>
+              <span class="issue-name">{{ f.title }}</span>
             </div>
             <span class="tag {{ 'tag-red' if red else ('tag-yellow' if amber else 'tag-green') }}">{{ "RED" if red else ("AMBER" if amber else f.severity|upper) }}</span>
           </div>
 
           <div class="issue-section">
-            <div class="issue-k">Detected sentence(s)</div>
+            <div class="issue-k">Detected claim</div>
             <div class="issue-box">{{ f.snippet }}</div>
           </div>
 
@@ -102,7 +102,7 @@
           </div>
 
           <div class="issue-section">
-            <div class="issue-k">Recommendations and advice</div>
+            <div class="issue-k">Recommendation</div>
             <div class="issue-box">{{ f.recommendation }}</div>
           </div>
 

@@ -809,6 +809,60 @@ def clean_snippet(s: str) -> str:
     return snippet
 
 
+def _cleanup_claim_text(text: str) -> str:
+    cleaned = clean_snippet(text)
+    cleaned = re.sub(r"\b(Home|Menu|Search|Contact|Privacy|Cookie settings)\b", "", cleaned, flags=re.I)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    words = cleaned.split()
+    compact_words: List[str] = []
+    for word in words:
+        if len(compact_words) >= 2 and compact_words[-1].lower() == word.lower() and compact_words[-2].lower() == word.lower():
+            continue
+        compact_words.append(word)
+    cleaned = " ".join(compact_words)
+    return cleaned
+
+
+def _truncate_snippet_with_ellipses(text: str, *, max_len: int = 330) -> str:
+    cleaned = _cleanup_claim_text(text)
+    if len(cleaned) > max_len:
+        cut = cleaned[:max_len].rsplit(" ", 1)[0].strip()
+        cleaned = cut or cleaned[:max_len]
+    return f"...{cleaned}..." if cleaned else ""
+
+
+def _future_target_snippet_score(candidate: str) -> int:
+    normalized = (candidate or "").lower()
+    score = 0
+    if "reduce greenhouse gas emissions" in normalized:
+        score += 6
+    if "55%" in normalized or "55 %" in normalized:
+        score += 4
+    if "2030" in normalized:
+        score += 4
+    if "greenhouse" in normalized and "emissions" in normalized:
+        score += 2
+    return score
+
+
+def choose_issue_snippet(category: str, evidence: str, sentence_blocks: List[str]) -> str:
+    if category in {"FUTURE_TARGET", "FUTURE_NET_ZERO_TARGETS"}:
+        preferred_candidate = _cleanup_claim_text(evidence)
+        evidence_hint = preferred_candidate.lower()
+        has_future_target_hint = any(token in evidence_hint for token in ["greenhouse", "emissions", "55%", "55 %", "2030"])
+        if has_future_target_hint:
+            candidates = [block for block in sentence_blocks if len(_cleanup_claim_text(block)) >= 30]
+            scored = sorted(
+                candidates,
+                key=lambda c: (_future_target_snippet_score(c), -abs(len(_cleanup_claim_text(c)) - 280)),
+                reverse=True,
+            )
+            if scored and _future_target_snippet_score(scored[0]) >= 8:
+                preferred_candidate = scored[0]
+        return _truncate_snippet_with_ellipses(preferred_candidate)
+    return _cleanup_claim_text(evidence)
+
+
 def make_sentence_blocks(text: str) -> List[str]:
     normalized = (text or "").strip()
     paragraphs = [_normalize_block_text(p) for p in re.split(r"\n+", normalized) if _normalize_block_text(p)]
@@ -1180,7 +1234,8 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
         how_to_fix: str,
         llm_prompt: str = "",
     ) -> None:
-        normalized = normalize_claim_text(evidence)
+        snippet = choose_issue_snippet(category, evidence, sentence_blocks)
+        normalized = normalize_claim_text(snippet)
         key = (category, normalized)
         if key in seen:
             return
@@ -1188,13 +1243,13 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
             if existing_issue.category != category:
                 continue
             existing_norm = normalize_claim_text(existing_issue.evidence)
-            is_similar = text_similarity(existing_issue.evidence, evidence) > 0.85
+            is_similar = text_similarity(existing_issue.evidence, snippet) > 0.85
             has_overlap = normalized in existing_norm or existing_norm in normalized
             if category in {"FUTURE_TARGET", "FUTURE_NET_ZERO_TARGETS"}:
-                new_sig = _target_signature(evidence)
+                new_sig = _target_signature(snippet)
                 old_sig = _target_signature(existing_issue.evidence)
                 comparable = new_sig == old_sig and any(new_sig)
-                is_similar = text_similarity(existing_issue.evidence, evidence) > 0.93 if comparable else False
+                is_similar = text_similarity(existing_issue.evidence, snippet) > 0.93 if comparable else False
                 has_overlap = has_overlap and comparable
             if is_similar or has_overlap:
                 dedup_events.append(f"merged:{category}")
@@ -1203,7 +1258,7 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
                         category=category,
                         url=page_url,
                         message=message,
-                        evidence=evidence.strip(),
+                        evidence=snippet.strip(),
                         severity=severity,
                         how_to_fix=how_to_fix,
                         llm_prompt=llm_prompt,
@@ -1216,13 +1271,13 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
             dedup_events.append(f"suppressed_similarity:{category}")
             return
         seen.add(key)
-        existing_claims.append(evidence)
+        existing_claims.append(snippet)
         issues.append(
             Finding(
                 category=category,
                 url=page_url,
                 message=message,
-                evidence=evidence.strip(),
+                evidence=snippet.strip(),
                 severity=severity,
                 how_to_fix=how_to_fix,
                 llm_prompt=llm_prompt,
@@ -1716,7 +1771,8 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
                     f"Repeat and verify these keywords with substantiation: \"{repeated_keywords}\"."
                 )
         return {
-            "label": CATEGORY_LABELS.get(f.category, f.category.replace("_", " ").title()),
+            "title": CATEGORY_LABELS.get(f.category, f.category.replace("_", " ").title()),
+            "severity": f.severity,
             "snippet": f.evidence,
             "page_url": f.url,
             "page_url_readable": readable_source,
@@ -1726,7 +1782,6 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
             "message": f.message,
             "rule": rule_text,
             "recommendation": f.how_to_fix,
-            "severity": f.severity,
         }
 
     context = {
