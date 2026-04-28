@@ -311,6 +311,28 @@ FALLBACK_BROWSER_USER_AGENTS = [
 ]
 
 
+def _classify_playwright_error(exc: Exception) -> str:
+    message = str(exc).lower()
+    if any(token in message for token in ("executable doesn't exist", "browser has not been found", "playwright install")):
+        return "browser_not_found"
+    if any(token in message for token in ("permission denied", "eacces", "operation not permitted")):
+        return "permission_issue"
+    if any(
+        token in message
+        for token in (
+            "error while loading shared libraries",
+            "no such file or directory",
+            "depends on",
+            "libx",
+            "libgtk",
+            "libnss3",
+            "libatk",
+        )
+    ):
+        return "missing_dependency"
+    return "unknown"
+
+
 def get_git_commit_hash() -> str:
     try:
         return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, timeout=2).strip()
@@ -323,10 +345,15 @@ def extract_rendered_text_with_playwright(
     timeout_ms: int = 18000,
     user_agents: Optional[List[str]] = None,
 ) -> str:
+    LOGGER.warning("PLAYWRIGHT ACTIVE")
     try:
         from playwright.sync_api import sync_playwright
     except Exception as exc:
-        LOGGER.warning("[extraction] mode=PLAYWRIGHT unavailable error=%s", exc)
+        LOGGER.warning(
+            "[extraction] mode=PLAYWRIGHT unavailable error_type=%s error=%s",
+            _classify_playwright_error(exc),
+            exc,
+        )
         return ""
 
     ua_pool = [ua for ua in (user_agents or FALLBACK_BROWSER_USER_AGENTS) if ua]
@@ -371,13 +398,22 @@ def extract_rendered_text_with_playwright(
                             LOGGER.warning("[extraction] extracted_text_length=%s", len(normalized))
                             return normalized
                     except Exception as exc:
-                        LOGGER.warning("[extraction] mode=PLAYWRIGHT failed ua_attempt=%s error=%s", attempt, exc)
+                        LOGGER.warning(
+                            "[extraction] mode=PLAYWRIGHT failed ua_attempt=%s error_type=%s error=%s",
+                            attempt,
+                            _classify_playwright_error(exc),
+                            exc,
+                        )
                     finally:
                         context.close()
             finally:
                 browser.close()
-    except Exception:
-        LOGGER.warning("[extraction] mode=PLAYWRIGHT crashed_before_extract=true")
+    except Exception as exc:
+        LOGGER.warning(
+            "[extraction] mode=PLAYWRIGHT crashed_before_extract=true error_type=%s error=%s",
+            _classify_playwright_error(exc),
+            exc,
+        )
         return ""
     LOGGER.warning("[extraction] mode=PLAYWRIGHT extracted_text_empty=true")
     return ""
