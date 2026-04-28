@@ -3,7 +3,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.main import _candidate_blocks, _extract_main_article_text, clean_snippet, find_issues_on_page
+from app.main import RULEBOOK, _candidate_blocks, _extract_main_article_text, clean_snippet, find_issues_on_page
 
 
 def test_color_context_without_claim_is_ignored():
@@ -258,6 +258,44 @@ def test_hero_block_with_two_signal_groups_is_forced_into_generic_candidate_pipe
     assert generic
     assert "responsible digital future" in generic[0].evidence.lower()
     assert "sustainable components" in generic[0].evidence.lower()
+
+
+def test_future_target_regression_fixture_returns_exactly_one_issue():
+    fixture_text = (
+        "Our ESG Ambitions Environment Reduce greenhouse gas emissions by at least 55% by 2030, "
+        "aligning with the EU's Green Deal and international environmental regulations."
+    )
+    findings = find_issues_on_page("https://example.com/esg", fixture_text)
+    future_findings = [f for f in findings if f.category == "FUTURE_NET_ZERO_TARGETS"]
+    assert len(future_findings) == 1
+    assert len(findings) == 1
+    assert "55% by 2030" in future_findings[0].evidence
+
+
+def test_rule_level_future_target_unit_case_returns_amber_equivalent():
+    text = (
+        "Reduce greenhouse gas emissions by at least 55% by 2030, aligning with the EU's Green Deal "
+        "and international environmental regulations."
+    )
+    findings = find_issues_on_page("https://example.com/environment", text)
+    assert len(findings) == 1
+    assert findings[0].category == "FUTURE_NET_ZERO_TARGETS"
+    assert findings[0].severity == "medium"
+
+
+def test_integration_mocked_extracted_text_contains_expected_future_target_details():
+    extracted_text = (
+        "Our ESG Ambitions Environment Reduce greenhouse gas emissions by at least 55% by 2030, "
+        "aligning with the EU's Green Deal and international environmental regulations."
+    )
+    findings = find_issues_on_page("https://example.com/integration", extracted_text)
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.evidence == extracted_text
+    assert finding.category == "FUTURE_NET_ZERO_TARGETS"
+    assert finding.severity == "medium"
+    assert finding.message == RULEBOOK["FUTURE_TARGET"]
+    assert "baseline year and emissions scopes" in finding.how_to_fix
 
 
 def test_duplicate_generic_claims_are_fuzzy_deduplicated():
