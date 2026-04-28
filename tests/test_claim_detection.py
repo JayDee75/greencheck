@@ -157,9 +157,27 @@ def test_scan_switches_to_playwright_when_static_returns_non_200(monkeypatch):
 
     pages, findings, debug = scan_site("https://example.com/esg")
     assert pages == 1
-    assert debug["extraction_mode"] == "PLAYWRIGHT"
+    assert debug["extraction_mode"] == "STATIC+PLAYWRIGHT"
     assert debug["rendered_fallback_used"] is True
     assert any(f.category in {"FUTURE_TARGET", "FUTURE_NET_ZERO_TARGETS"} for f in findings)
+
+
+def test_scan_uses_playwright_when_static_lacks_strong_future_target_signals(monkeypatch):
+    static_html = "<html><body>" + ("Our ESG environment progress and sustainability roadmap. " * 60) + "</body></html>"
+    rendered = "Reduce greenhouse gas emissions by at least 55% by 2030."
+
+    monkeypatch.setattr("app.main.fetch_html", lambda *_args, **_kwargs: (static_html, 200))
+    monkeypatch.setattr("app.main.extract_rendered_text_with_playwright", lambda *_args, **_kwargs: rendered)
+
+    pages, findings, debug = scan_site("https://example.com/esg")
+    assert pages == 1
+    assert debug["playwright_used"] is True
+    assert debug["playwright_error"] is None
+    assert debug["extraction_mode"] == "STATIC+PLAYWRIGHT"
+    assert "missing_strong_future_target_signal" in debug["rendered_fallback_reason"]
+    assert debug["contains_target_claim"] is True
+    assert debug["extracted_text_length"] > len(rendered)
+    assert any(f.category == "FUTURE_NET_ZERO_TARGETS" for f in findings)
 
 
 def test_scan_returns_warning_if_static_and_playwright_fail(monkeypatch):
@@ -554,7 +572,7 @@ def test_scan_site_triggers_rendered_fallback_when_static_text_is_short_and_keyw
 
     _, findings, extraction_debug = scan_site("https://example.com/esg")
 
-    assert extraction_debug["extraction_mode"] == "PLAYWRIGHT"
+    assert extraction_debug["extraction_mode"] == "STATIC+PLAYWRIGHT"
     assert "short_static_text" in extraction_debug["rendered_fallback_reason"]
     assert extraction_debug["greenhouse_gas_in_text"] is True
     assert len([f for f in findings if f.category == "FUTURE_NET_ZERO_TARGETS"]) == 1
