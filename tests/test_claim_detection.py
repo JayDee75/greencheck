@@ -4,6 +4,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.main import (
+    RENDER_WARNING,
     RULEBOOK,
     _candidate_blocks,
     _extract_main_article_text,
@@ -144,6 +145,30 @@ def test_tier5_false_positive_without_tier1_or_tier2_does_not_trigger_generic_de
         "Our strategy focuses on financial sustainability and long-term profitability.",
     )
     assert all(f.category != "GENERIC_ENVIRONMENTAL_CLAIMS" for f in findings)
+
+
+def test_scan_switches_to_playwright_when_static_returns_non_200(monkeypatch):
+    static_html = "<html><body>Short teaser.</body></html>"
+    rendered = "Reduce greenhouse gas emissions by at least 55% by 2030."
+
+    monkeypatch.setattr("app.main.fetch_html", lambda *_args, **_kwargs: (static_html, 206))
+    monkeypatch.setattr("app.main.extract_rendered_text_with_playwright", lambda *_args, **_kwargs: rendered)
+
+    pages, findings, debug = scan_site("https://example.com/esg")
+    assert pages == 1
+    assert debug["extraction_mode"] == "PLAYWRIGHT"
+    assert debug["rendered_fallback_used"] is True
+    assert any(f.category in {"FUTURE_TARGET", "FUTURE_NET_ZERO_TARGETS"} for f in findings)
+
+
+def test_scan_returns_warning_if_static_and_playwright_fail(monkeypatch):
+    monkeypatch.setattr("app.main.fetch_html", lambda *_args, **_kwargs: (None, 403))
+    monkeypatch.setattr("app.main.extract_rendered_text_with_playwright", lambda *_args, **_kwargs: "")
+
+    pages, findings, debug = scan_site("https://example.com/blocked")
+    assert pages == 1
+    assert findings == []
+    assert RENDER_WARNING in debug["warnings"]
 
 
 def test_main_article_extraction_prioritizes_intro_and_excludes_related_teasers():

@@ -292,6 +292,7 @@ SUSTAINABILITY_FRAMING = re.compile(
 LOGGER = logging.getLogger(__name__)
 PIPELINE_DEBUG_ENABLED = os.getenv("GREENCHECK_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 ADMIN_DEBUG_ENABLED = os.getenv("GREENCHECK_ADMIN_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+RENDER_WARNING = "Page could not be fully rendered due to access restrictions"
 
 DEFAULT_BROWSER_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -362,10 +363,12 @@ def extract_rendered_text_with_playwright(
                             "() => !!document?.body && (document.body.innerText || '').trim().length > 250",
                             timeout=timeout_ms,
                         )
-                        page.wait_for_timeout(4000)
+                        page.wait_for_timeout(3000)
                         inner_text = page.evaluate("() => document?.body?.innerText || ''")
                         normalized = normalize_extracted_text(inner_text)
                         if normalized:
+                            LOGGER.warning("PLAYWRIGHT SUCCESS")
+                            LOGGER.warning("[extraction] extracted_text_length=%s", len(normalized))
                             return normalized
                     except Exception as exc:
                         LOGGER.warning("[extraction] mode=PLAYWRIGHT failed ua_attempt=%s error=%s", attempt, exc)
@@ -1321,20 +1324,26 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], 
 
     session = requests.Session()
     html, status_code = fetch_html(start_url, session=session)
+    extraction_warnings: List[str] = []
     if not html:
+        LOGGER.warning("STATIC FAILED → switching to PLAYWRIGHT")
         if status_code == 403:
             LOGGER.warning("[extraction] fallback_triggered=true reason=static_http_403")
+        elif status_code is not None and status_code != 200:
+            LOGGER.warning("[extraction] fallback_triggered=true reason=static_non_200_status status=%s", status_code)
         else:
             LOGGER.warning("[extraction] fallback_triggered=true reason=static_fetch_failed")
         rendered_text = extract_rendered_text_with_playwright(start_url)
         if not rendered_text:
-            return 1, [], {}
+            extraction_warnings.append(RENDER_WARNING)
+            return 1, [], {"warnings": extraction_warnings, "http_status": status_code}
         extraction_debug = {
             "rendered_fallback_used": True,
             "extraction_mode": "PLAYWRIGHT",
             "rendered_text_length": len(rendered_text),
             "greenhouse_gas_in_text": "greenhouse gas" in rendered_text.lower(),
             "http_status": status_code,
+            "warnings": extraction_warnings,
         }
         LOGGER.warning(
             "[extraction] mode=%s extracted_text_length=%s greenhouse_gas_present=%s",
@@ -1351,6 +1360,8 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], 
     main_text = normalize_extracted_text(main_text)
     extraction_mode = "STATIC"
     fallback_reason: List[str] = []
+    if status_code is not None and status_code != 200:
+        fallback_reason.append(f"non_200_status_{status_code}")
     if len(main_text) < 2000:
         fallback_reason.append("short_static_text")
     if not has_environmental_keyword_signal(main_text):
@@ -1358,6 +1369,7 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], 
 
     rendered_text = ""
     if fallback_reason:
+        LOGGER.warning("STATIC FAILED → switching to PLAYWRIGHT")
         LOGGER.warning("[extraction] fallback_triggered=true reason=%s", ",".join(fallback_reason))
         rendered_text = extract_rendered_text_with_playwright(start_url)
         if rendered_text:
@@ -1365,7 +1377,10 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], 
             extraction_mode = "PLAYWRIGHT"
             extraction_debug["rendered_fallback_used"] = True
             extraction_debug["rendered_fallback_reason"] = fallback_reason
+        else:
+            extraction_warnings.append(RENDER_WARNING)
     extraction_debug["extraction_mode"] = extraction_mode
+    extraction_debug["warnings"] = extraction_warnings
     extraction_debug["rendered_text_length"] = len(rendered_text or "")
     extraction_debug["extracted_text_length"] = len(main_text or "")
     extraction_debug["greenhouse_gas_in_text"] = "greenhouse gas" in (main_text or "").lower()
@@ -1521,6 +1536,7 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
         "findings_high": [to_template_finding(f) for f in findings_obj if f.severity == "high"],
         "findings_medium": [to_template_finding(f) for f in findings_obj if f.severity == "medium"],
         "debug_data": extraction_debug.get("claim_pipeline_debug", {}),
+        "warnings": extraction_debug.get("warnings", []),
     }
 
     return templates.TemplateResponse("report.html", context)
@@ -1541,6 +1557,7 @@ async def debug_scan_json(url: str, max_pages: int = 10):
         "candidateWindows": future_debug.get("future_target_candidate_windows", []),
         "matchedRules": [f.category for f in findings_obj],
         "suppressedRules": claim_debug.get("suppressed_or_deduplicated", []),
+        "warnings": extraction_debug.get("warnings", []),
     }
 
 

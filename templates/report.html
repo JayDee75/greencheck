@@ -67,6 +67,11 @@
 
     <section class="card">
       <h2 class="h2">Issues</h2>
+      {% if warnings %}
+        <div class="empty">
+          {{ warnings|join(" | ") }}
+        </div>
+      {% endif %}
 
       {% if total_issues == 0 %}
         <div class="empty">
