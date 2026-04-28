@@ -11,5 +11,6 @@ EmpCo compliance checker met focus op **materiële** claims rond klimaat/emissie
 ## Starten
 ```bash
 pip install -r requirements.txt
+python -m playwright install chromium
 uvicorn app.main:app --reload
 ```
