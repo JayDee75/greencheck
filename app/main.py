@@ -95,13 +95,27 @@ OFFSET_HINT = re.compile(r"\b(offset|compensat|certificate|credit)\b", re.I)
 
 GENERIC_SUSTAINABILITY_CLAIM = re.compile(
     r"\b("
-    r"sustainable|conscious|responsible|environmentally\s+friendly|eco[-\s]?friendly|green|"
+    r"sustainable|sustainability|conscious|responsible|environmentally\s+friendly|eco[-\s]?friendly|green|"
     r"carbon\s+friendly|energy\s+efficient|carbon\s+neutral|climate\s+neutral|"
     r"duurzaam|duurzame|milieuvriendelijk|ecologisch|groen|klimaatneutraal|co2[-\s]?neutraal|"
     r"nachhaltig|umweltfreundlich|klimaneutral|ressourcenschonend|"
     r"durable|responsable|respectueux\s+de\s+l[’']environnement|vert|neutre\s+en\s+carbone|"
     r"sostenible|respetuoso\s+con\s+el\s+medio\s+ambiente|ecol[oó]gico|verde|neutro\s+en\s+carbono"
     r")\b",
+    re.I,
+)
+
+VAGUE_ESG_PHRASE = re.compile(
+    r"\b("
+    r"sustainability\s+seriously|sustainable\s+future|better\s+planet|environmentally\s+responsible|"
+    r"respect\s+for\s+people,\s*planet\s+and\s+product|good\s+for\s+people\s+and\s+planet|"
+    r"short[-\s]+and[-\s]+long[-\s]+term\s+goals"
+    r")\b",
+    re.I,
+)
+
+ESG_CONTEXT_HINT = re.compile(
+    r"\b(esg|sustainab(?:le|ility)|environment(?:al)?|planet|climate|impact|people,\s*planet)\b",
     re.I,
 )
 
@@ -113,7 +127,7 @@ GENERIC_SUBSTANTIATION_HINT = re.compile(
 )
 
 NON_ENVIRONMENTAL_SUSTAINABLE_CONTEXT = re.compile(
-    r"\b(career|hr|workforce|employment|people|worker)\b",
+    r"\b(career|hr|workforce|employment|people|worker|financial\s+sustainability|profitability)\b",
     re.I,
 )
 
@@ -146,6 +160,11 @@ THIRD_PARTY_EXPLANATORY_CONTEXT = re.compile(
     r"ratings?|rating\s+framework|framework|benchmark|methodolog(?:y|ie)|evaluation|assess(?:ment|ed)|"
     r"third[-\s]?party|independent|certification\s+scheme|recogni[sz]ed\s+authority|"
     r"sustainable\s+procurement|labou?r\s*(?:&|and)\s*human\s+rights)\b",
+    re.I,
+)
+EXTERNAL_REGULATORY_CONTEXT = re.compile(
+    r"\b(eu(?:ropean\s+union)?'?\s+s?\s+green\s+deal|eu\s+green\s+deal|directive\s*\(eu\)|"
+    r"regulation|regulatory|international\s+environmental\s+regulations?)\b",
     re.I,
 )
 ASSET_PATH_HINT = re.compile(
@@ -217,7 +236,9 @@ SELF_MADE_LABEL = re.compile(
     r"\b(our\s+(?:eco|green|sustainab(?:ility|le))\s*(?:label|seal|badge)|"
     r"internal\s+certification|own\s+certification|self[-\s]?certified|"
     r"proprietary\s+(?:eco|green)\s*(?:label|badge)|"
-    r"eco\s*(?:label|seal|badge)\s+by\s+us)\b",
+    r"eco\s*(?:label|seal|badge)\s+by\s+us|"
+    r"our\s+(?:own\s+)?[a-z0-9&\-\s]{0,40}(?:green\s+deal|sustainability\s+programme|sustainability\s+program|"
+    r"green\s+label|eco\s+programme|eco\s+program|planet\s+promise))\b",
     re.I,
 )
 
@@ -1265,6 +1286,11 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
         how_to_fix: str,
         llm_prompt: str = "",
     ) -> None:
+        if category in {"GENERIC_ENVIRONMENTAL_CLAIMS", "SUSTAINABILITY_LABELS"} and any(
+            existing_issue.category == category for existing_issue in issues
+        ):
+            dedup_events.append(f"capped:{category}")
+            return
         snippet = choose_issue_snippet(category, evidence, sentence_blocks)
         normalized = normalize_claim_text(snippet)
         key = (category, normalized)
@@ -1425,6 +1451,8 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
             )
 
         generic_match = GENERIC_SUSTAINABILITY_CLAIM.search(chunk)
+        vague_esg_match = VAGUE_ESG_PHRASE.search(chunk)
+        has_esg_context = bool(ESG_CONTEXT_HINT.search(chunk))
         non_environmental_sustainable = bool(
             generic_match
             and generic_match.group(0).lower().startswith("sustainab")
@@ -1435,9 +1463,10 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
 
         has_claim_subject = bool(CLAIM_SUBJECT_HINT.search(chunk) or CLAIM_ACTION_HINT.search(chunk))
         is_third_party_context = bool(THIRD_PARTY_EXPLANATORY_CONTEXT.search(chunk))
+        is_external_regulatory_context = bool(EXTERNAL_REGULATORY_CONTEXT.search(chunk))
         commercial_context = bool(re.search(r"\b(offerings?|services?|producten?|solutions?)\b", chunk, re.I))
         is_editorial_context = bool(INFO_EDITORIAL_URL_HINT.search(page_url) or INFO_EDITORIAL_TEXT_HINT.search(chunk))
-        generic_gate = (generic_match or should_trigger_llm)
+        generic_gate = (generic_match or should_trigger_llm or (vague_esg_match and has_esg_context))
         claim_subject_gate = has_claim_subject or tier2_candidate or fallback_candidate
         blocked = (
             has_generic_substantiation
@@ -1445,6 +1474,7 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
             or has_absolute_claim
             or non_environmental_sustainable
             or is_third_party_context
+            or is_external_regulatory_context
             or (is_editorial_context and not commercial_context)
         ) and not has_future_target
         if PIPELINE_DEBUG_ENABLED and generic_gate:
@@ -1460,9 +1490,11 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
             generic_candidate_created = True
             log_pipeline_event("sent_to_llm", relevant_block, category="GENERIC_ENVIRONMENTAL_CLAIMS")
             claim_text = generic_match.group(0) if generic_match else "broad sustainability framing"
+            if vague_esg_match:
+                claim_text = vague_esg_match.group(0)
             if not generic_match and taxonomy_signal["tier2"]:
                 claim_text = sorted(taxonomy_signal["tier2"])[0]
-            severity = "low"
+            severity = "medium"
             substantiation_context = ""
             if taxonomy_signal["tier4"]:
                 substantiation_context = (

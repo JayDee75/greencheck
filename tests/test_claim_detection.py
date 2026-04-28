@@ -38,13 +38,29 @@ def test_absolute_claim_not_duplicated_as_generic_claim():
     assert "GENERIC_ENVIRONMENTAL_CLAIMS" not in categories
 
 
-def test_generic_claims_are_low_priority():
+def test_generic_claims_are_amber_priority():
     findings = find_issues_on_page(
         "https://example.com/impact",
         "We are sustainable and eco-friendly in our services.",
     )
     assert findings
-    assert any(f.severity == "low" for f in findings if f.category == "GENERIC_ENVIRONMENTAL_CLAIMS")
+    assert any(f.severity == "medium" for f in findings if f.category == "GENERIC_ENVIRONMENTAL_CLAIMS")
+
+
+def test_poppies_vague_esg_claims_cluster_to_two_amber_issues():
+    text = (
+        "As a fast-growing company, we take sustainability seriously. "
+        "We have adopted our own Poppies Green Deal, setting ourselves short- and long-term goals "
+        "to ensure the sustainability of our activities with respect to people, planet and product."
+    )
+    findings = find_issues_on_page("https://www.poppiesbakeries.com/en/sustainability", text)
+    categories = [f.category for f in findings]
+
+    assert categories.count("GENERIC_ENVIRONMENTAL_CLAIMS") == 1
+    assert categories.count("SUSTAINABILITY_LABELS") == 1
+    assert len(findings) == 2
+    assert all(f.severity == "medium" for f in findings)
+    assert all(len(make_display_snippet(f.evidence, keywords=[])) <= 400 for f in findings)
 
 
 def test_image_filename_or_media_path_is_ignored_for_generic_claims():
