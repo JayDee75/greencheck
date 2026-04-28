@@ -385,7 +385,7 @@ def extract_rendered_text_with_playwright(
 
     try:
         with sync_playwright() as p:
-            chromium_executable = _detect_chromium_executable()
+            chromium_executable: Optional[str] = _detect_chromium_executable()
             launch_kwargs: Dict[str, Any] = {
                 "headless": True,
                 "args": ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"],
