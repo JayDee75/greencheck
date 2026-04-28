@@ -4,13 +4,11 @@ WORKDIR /app
 
 COPY requirements.txt /app/requirements.txt
 
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y chromium chromium-driver && apt-get install -y \
     wget \
     curl \
     gnupg \
     ca-certificates \
-    chromium \
-    chromium-driver \
     fonts-liberation \
     libnss3 \
     libatk1.0-0 \
@@ -30,6 +28,8 @@ RUN apt-get update && apt-get install -y \
     libxext6 \
     libxfixes3 \
     && rm -rf /var/lib/apt/lists/*
+
+ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
 RUN pip install --no-cache-dir -r /app/requirements.txt
 

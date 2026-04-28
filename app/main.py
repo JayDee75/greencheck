@@ -293,7 +293,7 @@ SUSTAINABILITY_FRAMING = re.compile(
 LOGGER = logging.getLogger(__name__)
 PIPELINE_DEBUG_ENABLED = os.getenv("GREENCHECK_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 ADMIN_DEBUG_ENABLED = os.getenv("GREENCHECK_ADMIN_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
-RENDER_WARNING = "Page could not be fully rendered due to access restrictions"
+RENDER_WARNING = "Page could not be rendered due to browser or access limitations"
 
 DEFAULT_BROWSER_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -388,17 +388,15 @@ def extract_rendered_text_with_playwright(
         with sync_playwright() as p:
             chromium_executable: Optional[str] = _detect_chromium_executable()
             result["chromium_path"] = chromium_executable
-            launch_kwargs: Dict[str, Any] = {
-                "headless": True,
-                "args": ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"],
-            }
-            if chromium_executable:
-                launch_kwargs["executable_path"] = chromium_executable
-                LOGGER.warning("[extraction] mode=PLAYWRIGHT using_system_chromium=%s", chromium_executable)
-            else:
+            if not chromium_executable:
                 LOGGER.warning("[extraction] mode=PLAYWRIGHT using_system_chromium=not_found")
+                result["playwright_error"] = "Chromium not installed in runtime"
+                return result
+            LOGGER.warning("[extraction] mode=PLAYWRIGHT using_system_chromium=%s", chromium_executable)
             browser = p.chromium.launch(
-                **launch_kwargs,
+                headless=True,
+                executable_path=chromium_executable,
+                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"],
             )
             LOGGER.warning("browser launched successfully")
             try:
@@ -483,7 +481,7 @@ def build_future_target_debug(text: str) -> Dict[str, object]:
         "extracted_text_length": len(text or ""),
         "extracted_text_preview": (text or "")[:3000],
         "contains_greenhouse_gas": "greenhouse gas" in (text or "").lower(),
-        "contains_55_percent": bool(re.search(r"55\\s*%", text or "", re.I)),
+        "contains_55_percent": bool(re.search(r"55\s*%", text or "", re.I)),
         "contains_2030": "2030" in (text or ""),
         "contains_reduce_greenhouse_gas_emissions": "reduce greenhouse gas emissions" in (text or "").lower(),
         "future_target_candidate_windows": windows,
@@ -1446,18 +1444,27 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], 
                 "chromium_path": chromium_path,
                 "extracted_text_length": 0,
                 "greenhouse_gas_in_text": False,
+                "contains_greenhouse_token": False,
+                "contains_emissions_token": False,
                 "contains_55_percent_token": False,
                 "contains_2030_token": False,
             }
         rendered_lower = rendered_text.lower()
+        contains_greenhouse = "greenhouse" in rendered_lower
+        contains_emissions = "emissions" in rendered_lower
+        contains_55 = ("55%" in rendered_lower or "55 %" in rendered_lower)
+        contains_2030 = "2030" in rendered_lower
         extraction_debug = {
             "rendered_fallback_used": True,
             "extraction_mode": extraction_mode,
             "rendered_text_length": len(rendered_text),
             "extracted_text_length": len(rendered_text),
             "greenhouse_gas_in_text": "greenhouse gas" in rendered_lower,
-            "contains_55_percent_token": ("55%" in rendered_lower or "55 %" in rendered_lower),
-            "contains_2030_token": "2030" in rendered_lower,
+            "contains_greenhouse_token": contains_greenhouse,
+            "contains_emissions_token": contains_emissions,
+            "contains_55_percent_token": contains_55,
+            "contains_2030_token": contains_2030,
+            "contains_target_claim": bool(contains_greenhouse and contains_emissions and contains_55 and contains_2030),
             "http_status": status_code,
             "playwright_used": playwright_used,
             "playwright_error": playwright_error,
@@ -1472,6 +1479,13 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], 
             extraction_debug["contains_55_percent_token"],
             extraction_debug["contains_2030_token"],
             extraction_debug["chromium_path"] or "not_found",
+        )
+        LOGGER.warning(
+            "[extraction] target_claim_tokens greenhouse=%s emissions=%s 55_percent=%s 2030=%s",
+            contains_greenhouse,
+            contains_emissions,
+            contains_55,
+            contains_2030,
         )
         extraction_debug["future_target_trace"] = build_future_target_debug(rendered_text)
         findings = find_issues_on_page(start_url, rendered_text, extraction_debug=extraction_debug)
@@ -1516,6 +1530,8 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], 
     contains_emissions = "emissions" in lower_text
     contains_55 = "55%" in lower_text or "55 %" in lower_text
     contains_2030 = "2030" in lower_text
+    extraction_debug["contains_greenhouse_token"] = contains_greenhouse
+    extraction_debug["contains_emissions_token"] = contains_emissions
     extraction_debug["contains_55_percent_token"] = contains_55
     extraction_debug["contains_2030_token"] = contains_2030
     extraction_debug["contains_target_claim"] = bool(contains_greenhouse and contains_emissions and contains_55 and contains_2030)
@@ -1689,26 +1705,32 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
 
 
 @app.get("/debug/scan-json")
-async def debug_scan_json(url: str, max_pages: int = 10):
-    if not ADMIN_DEBUG_ENABLED:
-        return {"enabled": False}
+def debug_scan_json(url: str, max_pages: int = 10):
     target = normalize_url(url)
     pages_scanned, findings_obj, extraction_debug = scan_site(target, max_pages=max_pages)
     claim_debug = extraction_debug.get("claim_pipeline_debug", {}) if isinstance(extraction_debug, dict) else {}
     future_debug = extraction_debug.get("future_target_trace", {}) if isinstance(extraction_debug, dict) else {}
+    finding_types = [f.category for f in findings_obj]
     return {
-        "enabled": True,
-        "extractionMode": extraction_debug.get("extraction_mode", "STATIC"),
-        "httpStatus": extraction_debug.get("http_status"),
-        "playwrightUsed": bool(extraction_debug.get("playwright_used", False)),
-        "playwrightError": extraction_debug.get("playwright_error"),
-        "extractedTextLength": int(extraction_debug.get("extracted_text_length", 0) or 0),
-        "containsTargetClaim": bool(extraction_debug.get("contains_target_claim", False)),
+        "enabled": bool(ADMIN_DEBUG_ENABLED),
+        "extraction_mode": extraction_debug.get("extraction_mode", "STATIC"),
+        "static_http_status": extraction_debug.get("http_status"),
+        "playwright_used": bool(extraction_debug.get("playwright_used", False)),
+        "detected_chromium_path": extraction_debug.get("chromium_path"),
+        "playwright_error": extraction_debug.get("playwright_error"),
+        "extracted_text_length": int(extraction_debug.get("extracted_text_length", 0) or 0),
+        "contains_greenhouse": bool(extraction_debug.get("contains_greenhouse_token", False)),
+        "contains_emissions": bool(extraction_debug.get("contains_emissions_token", False)),
+        "contains_55_percent": bool(extraction_debug.get("contains_55_percent_token", False)),
+        "contains_2030": bool(extraction_debug.get("contains_2030_token", False)),
+        "contains_target_claim": bool(extraction_debug.get("contains_target_claim", False)),
+        "findings_count": len(findings_obj),
+        "finding_types": sorted(set(finding_types)),
         "pages_scanned": pages_scanned,
-        "extractedText": future_debug.get("extracted_text_preview", ""),
-        "candidateWindows": future_debug.get("future_target_candidate_windows", []),
-        "matchedRules": [f.category for f in findings_obj],
-        "suppressedRules": claim_debug.get("suppressed_or_deduplicated", []),
+        "extracted_text_preview": future_debug.get("extracted_text_preview", ""),
+        "candidate_windows": future_debug.get("future_target_candidate_windows", []),
+        "matched_rules": finding_types,
+        "suppressed_rules": claim_debug.get("suppressed_or_deduplicated", []),
         "warnings": extraction_debug.get("warnings", []),
     }
 
