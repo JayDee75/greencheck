@@ -3,7 +3,15 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.main import RULEBOOK, _candidate_blocks, _extract_main_article_text, clean_snippet, find_issues_on_page
+from app.main import (
+    RULEBOOK,
+    _candidate_blocks,
+    _extract_main_article_text,
+    clean_snippet,
+    find_issues_on_page,
+    normalize_extracted_text,
+    scan_site,
+)
 
 
 def test_color_context_without_claim_is_ignored():
@@ -501,3 +509,23 @@ def test_cegeka_hero_block_is_extracted_exactly_and_generates_candidate_debug():
     assert claim_debug["hero_candidate_created"] is True
     assert claim_debug["hero_hard_fallback_triggered"] is True
     assert claim_debug["hero_block"] == expected
+
+
+def test_normalize_extracted_text_collapses_whitespace_and_removes_duplicate_lines():
+    raw = "  Our ESG Ambitions \n\nReduce greenhouse gas emissions   by 55% by 2030.\nReduce greenhouse gas emissions by 55% by 2030. "
+    assert normalize_extracted_text(raw) == "Our ESG Ambitions Reduce greenhouse gas emissions by 55% by 2030."
+
+
+def test_scan_site_triggers_rendered_fallback_when_static_text_is_short_and_keyword_empty(monkeypatch):
+    monkeypatch.setattr("app.main.fetch_html", lambda *_args, **_kwargs: "<html><body><main><p>Hello</p></main></body></html>")
+    monkeypatch.setattr(
+        "app.main.extract_rendered_text_with_playwright",
+        lambda *_args, **_kwargs: "Reduce greenhouse gas emissions by at least 55% by 2030.",
+    )
+
+    _, findings, extraction_debug = scan_site("https://example.com/esg")
+
+    assert extraction_debug["extraction_mode"] == "RENDERED"
+    assert "short_static_text" in extraction_debug["rendered_fallback_reason"]
+    assert extraction_debug["greenhouse_gas_in_text"] is True
+    assert len([f for f in findings if f.category == "FUTURE_NET_ZERO_TARGETS"]) == 1

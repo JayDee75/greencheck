@@ -312,10 +312,14 @@ def extract_rendered_text_with_playwright(url: str, timeout_ms: int = 18000) -> 
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
             page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+            page.wait_for_function(
+                "() => !!document?.body && (document.body.innerText || '').trim().length > 250",
+                timeout=timeout_ms,
+            )
             page.wait_for_timeout(2000)
             inner_text = page.evaluate("() => document?.body?.innerText || ''")
             browser.close()
-            return _normalize_block_text(inner_text)
+            return normalize_extracted_text(inner_text)
     except Exception:
         return ""
 
@@ -729,6 +733,32 @@ def sentence_tokenize(text: str) -> List[str]:
 
 def _normalize_block_text(block: str) -> str:
     return re.sub(r"\s+", " ", (block or "")).strip()
+
+
+def normalize_extracted_text(text: str) -> str:
+    normalized = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [_normalize_block_text(line) for line in normalized.split("\n")]
+    deduped_lines: List[str] = []
+    seen: Set[str] = set()
+    for line in lines:
+        if not line:
+            continue
+        key = line.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped_lines.append(line)
+    return _normalize_block_text("\n".join(deduped_lines))
+
+
+def has_environmental_keyword_signal(text: str) -> bool:
+    normalized = (text or "").lower()
+    keyword_patterns = [
+        CLIMATE_CONTEXT,
+        SUSTAINABILITY_CONTEXT,
+        re.compile(r"\b(ghg|greenhouse\s*gas|emissions?|carbon|climate|net\s*zero)\b", re.I),
+    ]
+    return any(pattern.search(normalized) for pattern in keyword_patterns)
 
 
 def hero_signal_groups(block: str) -> Dict[str, List[str]]:
@@ -1235,24 +1265,51 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], 
         rendered_text = extract_rendered_text_with_playwright(start_url)
         if not rendered_text:
             return 1, [], {}
-        extraction_debug = {"rendered_fallback_used": True, "rendered_text_length": len(rendered_text)}
+        extraction_debug = {
+            "rendered_fallback_used": True,
+            "extraction_mode": "RENDERED",
+            "rendered_text_length": len(rendered_text),
+            "greenhouse_gas_in_text": "greenhouse gas" in rendered_text.lower(),
+        }
+        LOGGER.warning(
+            "[extraction] mode=%s extracted_text_length=%s greenhouse_gas_present=%s",
+            extraction_debug["extraction_mode"],
+            extraction_debug["rendered_text_length"],
+            extraction_debug["greenhouse_gas_in_text"],
+        )
         extraction_debug["future_target_trace"] = build_future_target_debug(rendered_text)
         findings = find_issues_on_page(start_url, rendered_text, extraction_debug=extraction_debug)
         return 1, findings, extraction_debug
     main_text, extraction_debug = _extract_main_article_text(html)
     if not main_text:
         main_text = html_to_text(html)
-    rendered_text = extract_rendered_text_with_playwright(start_url)
-    if rendered_text:
-        should_prefer_rendered = (
-            len(rendered_text) > len(main_text) + 250
-            or ("greenhouse gas" in rendered_text.lower() and "greenhouse gas" not in main_text.lower())
-            or ("2030" in rendered_text and "2030" not in main_text)
-        )
-        if should_prefer_rendered:
+    main_text = normalize_extracted_text(main_text)
+    extraction_mode = "STATIC"
+    fallback_reason: List[str] = []
+    if len(main_text) < 2000:
+        fallback_reason.append("short_static_text")
+    if not has_environmental_keyword_signal(main_text):
+        fallback_reason.append("missing_environmental_keywords")
+
+    rendered_text = ""
+    if fallback_reason:
+        rendered_text = extract_rendered_text_with_playwright(start_url)
+        if rendered_text:
             main_text = rendered_text
+            extraction_mode = "RENDERED"
             extraction_debug["rendered_fallback_used"] = True
+            extraction_debug["rendered_fallback_reason"] = fallback_reason
+    extraction_debug["extraction_mode"] = extraction_mode
     extraction_debug["rendered_text_length"] = len(rendered_text or "")
+    extraction_debug["extracted_text_length"] = len(main_text or "")
+    extraction_debug["greenhouse_gas_in_text"] = "greenhouse gas" in (main_text or "").lower()
+    LOGGER.warning(
+        "[extraction] mode=%s extracted_text_length=%s greenhouse_gas_present=%s fallback_reason=%s",
+        extraction_debug["extraction_mode"],
+        extraction_debug["extracted_text_length"],
+        extraction_debug["greenhouse_gas_in_text"],
+        ",".join(fallback_reason) if fallback_reason else "n/a",
+    )
     if PIPELINE_DEBUG_ENABLED:
         LOGGER.warning(
             (
