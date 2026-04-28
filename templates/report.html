@@ -93,7 +93,11 @@
 
           <div class="issue-section">
             <div class="issue-k">Detected claim</div>
-            <div class="issue-box">{{ f.snippet }}</div>
+            {% set claim_text = f.display_snippet or "" %}
+            {% if claim_text|length > 400 %}
+              {% set claim_text = claim_text[:400] %}
+            {% endif %}
+            <div class="issue-box">{{ claim_text }}</div>
           </div>
 
           <div class="issue-section">
