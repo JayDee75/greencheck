@@ -1713,6 +1713,11 @@ async def debug_scan_json(url: str, max_pages: int = 10):
     }
 
 
+@app.head("/")
+async def home_head():
+    return {"status": "ok"}
+
+
 @app.get("/health")
 async def health():
-    return {"ok": True}
+    return {"status": "ok"}
