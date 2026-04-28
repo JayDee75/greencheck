@@ -293,6 +293,22 @@ LOGGER = logging.getLogger(__name__)
 PIPELINE_DEBUG_ENABLED = os.getenv("GREENCHECK_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 ADMIN_DEBUG_ENABLED = os.getenv("GREENCHECK_ADMIN_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 
+DEFAULT_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
+)
+FALLBACK_BROWSER_USER_AGENTS = [
+    DEFAULT_BROWSER_USER_AGENT,
+    (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
+    ),
+    (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
+    ),
+]
+
 
 def get_git_commit_hash() -> str:
     try:
@@ -301,27 +317,67 @@ def get_git_commit_hash() -> str:
         return "unknown"
 
 
-def extract_rendered_text_with_playwright(url: str, timeout_ms: int = 18000) -> str:
+def extract_rendered_text_with_playwright(
+    url: str,
+    timeout_ms: int = 18000,
+    user_agents: Optional[List[str]] = None,
+) -> str:
     try:
         from playwright.sync_api import sync_playwright
-    except Exception:
+    except Exception as exc:
+        LOGGER.warning("[extraction] mode=PLAYWRIGHT unavailable error=%s", exc)
         return ""
+
+    ua_pool = [ua for ua in (user_agents or FALLBACK_BROWSER_USER_AGENTS) if ua]
+    if not ua_pool:
+        ua_pool = [DEFAULT_BROWSER_USER_AGENT]
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-            page.goto(url, wait_until="networkidle", timeout=timeout_ms)
-            page.wait_for_function(
-                "() => !!document?.body && (document.body.innerText || '').trim().length > 250",
-                timeout=timeout_ms,
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
             )
-            page.wait_for_timeout(2000)
-            inner_text = page.evaluate("() => document?.body?.innerText || ''")
-            browser.close()
-            return normalize_extracted_text(inner_text)
+            try:
+                for attempt, ua in enumerate(ua_pool, start=1):
+                    context = browser.new_context(
+                        user_agent=ua,
+                        viewport={"width": 1280, "height": 800},
+                        java_script_enabled=True,
+                        locale="en-US",
+                        extra_http_headers={
+                            "Accept-Language": "en-US,en;q=0.9",
+                            "Accept": "text/html,application/xhtml+xml",
+                            "Connection": "keep-alive",
+                        },
+                    )
+                    try:
+                        page = context.new_page()
+                        response = page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+                        status = response.status if response else "unknown"
+                        LOGGER.warning("[extraction] mode=PLAYWRIGHT status=%s ua_attempt=%s", status, attempt)
+                        page.wait_for_load_state("networkidle", timeout=timeout_ms)
+                        page.wait_for_selector("body", state="visible", timeout=timeout_ms)
+                        page.wait_for_function(
+                            "() => !!document?.body && (document.body.innerText || '').trim().length > 250",
+                            timeout=timeout_ms,
+                        )
+                        page.wait_for_timeout(4000)
+                        inner_text = page.evaluate("() => document?.body?.innerText || ''")
+                        normalized = normalize_extracted_text(inner_text)
+                        if normalized:
+                            return normalized
+                    except Exception as exc:
+                        LOGGER.warning("[extraction] mode=PLAYWRIGHT failed ua_attempt=%s error=%s", attempt, exc)
+                    finally:
+                        context.close()
+            finally:
+                browser.close()
     except Exception:
+        LOGGER.warning("[extraction] mode=PLAYWRIGHT crashed_before_extract=true")
         return ""
+    LOGGER.warning("[extraction] mode=PLAYWRIGHT extracted_text_empty=true")
+    return ""
 
 
 def build_future_target_debug(text: str) -> Dict[str, object]:
@@ -396,21 +452,25 @@ def normalize_url(u: str) -> str:
     return u
 
 
-def fetch_html(url: str, session: requests.Session, timeout: int = 18) -> Optional[str]:
+def fetch_html(url: str, session: requests.Session, timeout: int = 18) -> Tuple[Optional[str], Optional[int]]:
     headers = {
-        "User-Agent": "Durably-GreenCheck/2.0 (+https://durably.eu)",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "User-Agent": DEFAULT_BROWSER_USER_AGENT,
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml",
+        "Connection": "keep-alive",
     }
     try:
         r = session.get(url, headers=headers, timeout=timeout, allow_redirects=True)
+        LOGGER.warning("[extraction] mode=STATIC status=%s", r.status_code)
         if r.status_code >= 400:
-            return None
+            return None, r.status_code
         ct = (r.headers.get("content-type") or "").lower()
         if "text/html" not in ct and "application/xhtml" not in ct:
-            return None
-        return r.text
-    except Exception:
-        return None
+            return None, r.status_code
+        return r.text, r.status_code
+    except Exception as exc:
+        LOGGER.warning("[extraction] mode=STATIC status=request_error error=%s", exc)
+        return None, None
 
 
 def is_readable_http_url(url: str) -> bool:
@@ -1260,16 +1320,21 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], 
         return 0, [], {}
 
     session = requests.Session()
-    html = fetch_html(start_url, session=session)
+    html, status_code = fetch_html(start_url, session=session)
     if not html:
+        if status_code == 403:
+            LOGGER.warning("[extraction] fallback_triggered=true reason=static_http_403")
+        else:
+            LOGGER.warning("[extraction] fallback_triggered=true reason=static_fetch_failed")
         rendered_text = extract_rendered_text_with_playwright(start_url)
         if not rendered_text:
             return 1, [], {}
         extraction_debug = {
             "rendered_fallback_used": True,
-            "extraction_mode": "RENDERED",
+            "extraction_mode": "PLAYWRIGHT",
             "rendered_text_length": len(rendered_text),
             "greenhouse_gas_in_text": "greenhouse gas" in rendered_text.lower(),
+            "http_status": status_code,
         }
         LOGGER.warning(
             "[extraction] mode=%s extracted_text_length=%s greenhouse_gas_present=%s",
@@ -1293,10 +1358,11 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], 
 
     rendered_text = ""
     if fallback_reason:
+        LOGGER.warning("[extraction] fallback_triggered=true reason=%s", ",".join(fallback_reason))
         rendered_text = extract_rendered_text_with_playwright(start_url)
         if rendered_text:
             main_text = rendered_text
-            extraction_mode = "RENDERED"
+            extraction_mode = "PLAYWRIGHT"
             extraction_debug["rendered_fallback_used"] = True
             extraction_debug["rendered_fallback_reason"] = fallback_reason
     extraction_debug["extraction_mode"] = extraction_mode
