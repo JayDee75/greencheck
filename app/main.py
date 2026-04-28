@@ -10,7 +10,7 @@ import string
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 import requests
@@ -315,6 +315,8 @@ def _classify_playwright_error(exc: Exception) -> str:
     message = str(exc).lower()
     if any(token in message for token in ("executable doesn't exist", "browser has not been found", "playwright install")):
         return "browser_not_found"
+    if any(token in message for token in ("timeout", "timed out")):
+        return "timeout"
     if any(token in message for token in ("permission denied", "eacces", "operation not permitted")):
         return "permission_issue"
     if any(
@@ -330,6 +332,8 @@ def _classify_playwright_error(exc: Exception) -> str:
         )
     ):
         return "missing_dependency"
+    if any(token in message for token in ("crash", "crashed", "target closed", "browser has been closed")):
+        return "crash"
     return "unknown"
 
 
@@ -344,17 +348,24 @@ def extract_rendered_text_with_playwright(
     url: str,
     timeout_ms: int = 18000,
     user_agents: Optional[List[str]] = None,
-) -> str:
-    LOGGER.warning("PLAYWRIGHT ACTIVE")
+) -> Dict[str, Any]:
+    LOGGER.warning("PLAYWRIGHT START")
+    result: Dict[str, Any] = {
+        "text": "",
+        "playwright_used": True,
+        "playwright_error": None,
+    }
     try:
         from playwright.sync_api import sync_playwright
     except Exception as exc:
+        error_type = _classify_playwright_error(exc)
         LOGGER.warning(
             "[extraction] mode=PLAYWRIGHT unavailable error_type=%s error=%s",
-            _classify_playwright_error(exc),
+            error_type,
             exc,
         )
-        return ""
+        result["playwright_error"] = f"{error_type}: {exc}"
+        return result
 
     ua_pool = [ua for ua in (user_agents or FALLBACK_BROWSER_USER_AGENTS) if ua]
     if not ua_pool:
@@ -366,6 +377,7 @@ def extract_rendered_text_with_playwright(
                 headless=True,
                 args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
             )
+            LOGGER.warning("browser launched successfully")
             try:
                 for attempt, ua in enumerate(ua_pool, start=1):
                     context = browser.new_context(
@@ -382,9 +394,11 @@ def extract_rendered_text_with_playwright(
                     try:
                         page = context.new_page()
                         response = page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+                        LOGGER.warning("page.goto success")
                         status = response.status if response else "unknown"
                         LOGGER.warning("[extraction] mode=PLAYWRIGHT status=%s ua_attempt=%s", status, attempt)
                         page.wait_for_load_state("networkidle", timeout=timeout_ms)
+                        LOGGER.warning("page load state reached")
                         page.wait_for_selector("body", state="visible", timeout=timeout_ms)
                         page.wait_for_function(
                             "() => !!document?.body && (document.body.innerText || '').trim().length > 250",
@@ -396,27 +410,44 @@ def extract_rendered_text_with_playwright(
                         if normalized:
                             LOGGER.warning("PLAYWRIGHT SUCCESS")
                             LOGGER.warning("[extraction] extracted_text_length=%s", len(normalized))
-                            return normalized
+                            LOGGER.warning("[extraction] extracted_text_preview_500=%s", normalized[:500])
+                            result["text"] = normalized
+                            return result
                     except Exception as exc:
+                        error_type = _classify_playwright_error(exc)
+                        LOGGER.warning("page.goto failure")
                         LOGGER.warning(
                             "[extraction] mode=PLAYWRIGHT failed ua_attempt=%s error_type=%s error=%s",
                             attempt,
-                            _classify_playwright_error(exc),
+                            error_type,
                             exc,
                         )
+                        result["playwright_error"] = f"{error_type}: {exc}"
                     finally:
                         context.close()
             finally:
                 browser.close()
     except Exception as exc:
+        error_type = _classify_playwright_error(exc)
         LOGGER.warning(
             "[extraction] mode=PLAYWRIGHT crashed_before_extract=true error_type=%s error=%s",
-            _classify_playwright_error(exc),
+            error_type,
             exc,
         )
-        return ""
+        result["playwright_error"] = f"{error_type}: {exc}"
+        return result
     LOGGER.warning("[extraction] mode=PLAYWRIGHT extracted_text_empty=true")
-    return ""
+    return result
+
+
+def _coerce_playwright_result(playwright_result: object) -> Tuple[str, Optional[str]]:
+    if isinstance(playwright_result, dict):
+        text = str(playwright_result.get("text", "") or "")
+        playwright_error = playwright_result.get("playwright_error")
+        return text, str(playwright_error) if playwright_error else None
+    if isinstance(playwright_result, str):
+        return playwright_result, None
+    return "", None
 
 
 def build_future_target_debug(text: str) -> Dict[str, object]:
@@ -1359,26 +1390,43 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], 
         return 0, [], {}
 
     session = requests.Session()
+    LOGGER.warning("STATIC FETCH START")
     html, status_code = fetch_html(start_url, session=session)
+    LOGGER.warning("HTTP status code=%s", status_code if status_code is not None else "request_error")
     extraction_warnings: List[str] = []
+    extraction_mode = "STATIC"
+    playwright_used = False
+    playwright_error: Optional[str] = None
+    rendered_text = ""
     if not html:
         LOGGER.warning("STATIC FAILED → switching to PLAYWRIGHT")
+        extraction_mode = "PLAYWRIGHT"
+        playwright_used = True
         if status_code == 403:
             LOGGER.warning("[extraction] fallback_triggered=true reason=static_http_403")
         elif status_code is not None and status_code != 200:
             LOGGER.warning("[extraction] fallback_triggered=true reason=static_non_200_status status=%s", status_code)
         else:
             LOGGER.warning("[extraction] fallback_triggered=true reason=static_fetch_failed")
-        rendered_text = extract_rendered_text_with_playwright(start_url)
+        playwright_result = extract_rendered_text_with_playwright(start_url)
+        rendered_text, playwright_error = _coerce_playwright_result(playwright_result)
         if not rendered_text:
             extraction_warnings.append(RENDER_WARNING)
-            return 1, [], {"warnings": extraction_warnings, "http_status": status_code}
+            return 1, [], {
+                "warnings": extraction_warnings,
+                "http_status": status_code,
+                "extraction_mode": extraction_mode,
+                "playwright_used": playwright_used,
+                "playwright_error": playwright_error,
+            }
         extraction_debug = {
             "rendered_fallback_used": True,
-            "extraction_mode": "PLAYWRIGHT",
+            "extraction_mode": extraction_mode,
             "rendered_text_length": len(rendered_text),
             "greenhouse_gas_in_text": "greenhouse gas" in rendered_text.lower(),
             "http_status": status_code,
+            "playwright_used": playwright_used,
+            "playwright_error": playwright_error,
             "warnings": extraction_warnings,
         }
         LOGGER.warning(
@@ -1394,7 +1442,6 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], 
     if not main_text:
         main_text = html_to_text(html)
     main_text = normalize_extracted_text(main_text)
-    extraction_mode = "STATIC"
     fallback_reason: List[str] = []
     if status_code is not None and status_code != 200:
         fallback_reason.append(f"non_200_status_{status_code}")
@@ -1403,23 +1450,41 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], 
     if not has_environmental_keyword_signal(main_text):
         fallback_reason.append("missing_environmental_keywords")
 
-    rendered_text = ""
     if fallback_reason:
         LOGGER.warning("STATIC FAILED → switching to PLAYWRIGHT")
         LOGGER.warning("[extraction] fallback_triggered=true reason=%s", ",".join(fallback_reason))
-        rendered_text = extract_rendered_text_with_playwright(start_url)
+        extraction_mode = "PLAYWRIGHT"
+        playwright_used = True
+        playwright_result = extract_rendered_text_with_playwright(start_url)
+        rendered_text, playwright_error = _coerce_playwright_result(playwright_result)
         if rendered_text:
             main_text = rendered_text
-            extraction_mode = "PLAYWRIGHT"
             extraction_debug["rendered_fallback_used"] = True
             extraction_debug["rendered_fallback_reason"] = fallback_reason
         else:
             extraction_warnings.append(RENDER_WARNING)
     extraction_debug["extraction_mode"] = extraction_mode
     extraction_debug["warnings"] = extraction_warnings
+    extraction_debug["http_status"] = status_code
+    extraction_debug["playwright_used"] = playwright_used
+    extraction_debug["playwright_error"] = playwright_error
     extraction_debug["rendered_text_length"] = len(rendered_text or "")
     extraction_debug["extracted_text_length"] = len(main_text or "")
     extraction_debug["greenhouse_gas_in_text"] = "greenhouse gas" in (main_text or "").lower()
+    lower_text = (main_text or "").lower()
+    contains_greenhouse = "greenhouse" in lower_text
+    contains_emissions = "emissions" in lower_text
+    contains_55 = "55%" in lower_text or "55 %" in lower_text
+    contains_2030 = "2030" in lower_text
+    extraction_debug["contains_target_claim"] = bool(contains_greenhouse and contains_emissions and contains_55 and contains_2030)
+    LOGGER.warning(
+        "[extraction] target_claim_tokens greenhouse=%s emissions=%s 55_percent=%s 2030=%s",
+        contains_greenhouse,
+        contains_emissions,
+        contains_55,
+        contains_2030,
+    )
+    LOGGER.warning("[extraction] extracted_text_preview_500=%s", (main_text or "")[:500])
     LOGGER.warning(
         "[extraction] mode=%s extracted_text_length=%s greenhouse_gas_present=%s fallback_reason=%s",
         extraction_debug["extraction_mode"],
@@ -1588,6 +1653,12 @@ async def debug_scan_json(url: str, max_pages: int = 10):
     future_debug = extraction_debug.get("future_target_trace", {}) if isinstance(extraction_debug, dict) else {}
     return {
         "enabled": True,
+        "extractionMode": extraction_debug.get("extraction_mode", "STATIC"),
+        "httpStatus": extraction_debug.get("http_status"),
+        "playwrightUsed": bool(extraction_debug.get("playwright_used", False)),
+        "playwrightError": extraction_debug.get("playwright_error"),
+        "extractedTextLength": int(extraction_debug.get("extracted_text_length", 0) or 0),
+        "containsTargetClaim": bool(extraction_debug.get("contains_target_claim", False)),
         "pages_scanned": pages_scanned,
         "extractedText": future_debug.get("extracted_text_preview", ""),
         "candidateWindows": future_debug.get("future_target_candidate_windows", []),
