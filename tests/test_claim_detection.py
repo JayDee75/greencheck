@@ -673,3 +673,51 @@ def test_extract_rendered_text_uses_detected_system_chromium(monkeypatch):
     assert launch_kwargs["executable_path"] == "/usr/bin/chromium"
     assert "--no-sandbox" in launch_kwargs["args"]
     assert "--disable-dev-shm-usage" in launch_kwargs["args"]
+
+
+def test_extract_rendered_text_falls_back_to_inner_text_after_goto_timeout(monkeypatch):
+    class DummyPage:
+        async def goto(self, *_args, **_kwargs):
+            raise TimeoutError("goto timed out")
+
+        async def wait_for_timeout(self, *_args, **_kwargs):
+            return None
+
+        async def evaluate(self, *_args, **_kwargs):
+            return "Reduce greenhouse gas emissions by at least 55% by 2030."
+
+    class DummyContext:
+        async def new_page(self):
+            return DummyPage()
+
+        async def close(self):
+            return None
+
+    class DummyBrowser:
+        async def new_context(self, **_kwargs):
+            return DummyContext()
+
+        async def close(self):
+            return None
+
+    class DummyChromium:
+        async def launch(self, **_kwargs):
+            return DummyBrowser()
+
+    class DummyPlaywright:
+        chromium = DummyChromium()
+
+    class DummyManager:
+        async def __aenter__(self):
+            return DummyPlaywright()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr("playwright.async_api.async_playwright", lambda: DummyManager())
+    from app.main import extract_rendered_text_with_playwright
+
+    result = asyncio.run(extract_rendered_text_with_playwright("https://example.com"))
+
+    assert "55% by 2030" in result["text"]
+    assert result["playwright_error"] is None
