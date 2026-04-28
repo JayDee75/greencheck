@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import html
 import json
+import asyncio
+import inspect
 import logging
 import os
 import re
@@ -356,7 +358,7 @@ def get_git_commit_hash() -> str:
         return "unknown"
 
 
-def extract_rendered_text_with_playwright(
+async def extract_rendered_text_with_playwright(
     url: str,
     timeout_ms: int = 18000,
     user_agents: Optional[List[str]] = None,
@@ -369,7 +371,7 @@ def extract_rendered_text_with_playwright(
         "chromium_path": None,
     }
     try:
-        from playwright.sync_api import sync_playwright
+        from playwright.async_api import async_playwright
     except Exception as exc:
         error_type = _classify_playwright_error(exc)
         LOGGER.warning(
@@ -385,7 +387,7 @@ def extract_rendered_text_with_playwright(
         ua_pool = [DEFAULT_BROWSER_USER_AGENT]
 
     try:
-        with sync_playwright() as p:
+        async with async_playwright() as p:
             chromium_executable: Optional[str] = _detect_chromium_executable()
             result["chromium_path"] = chromium_executable
             launch_kwargs: Dict[str, Any] = {
@@ -397,13 +399,11 @@ def extract_rendered_text_with_playwright(
                 LOGGER.warning("[extraction] mode=PLAYWRIGHT using_system_chromium=%s", chromium_executable)
             else:
                 LOGGER.warning("[extraction] mode=PLAYWRIGHT using_system_chromium=not_found")
-            browser = p.chromium.launch(
-                **launch_kwargs,
-            )
+            browser = await p.chromium.launch(**launch_kwargs)
             LOGGER.warning("browser launched successfully")
             try:
                 for attempt, ua in enumerate(ua_pool, start=1):
-                    context = browser.new_context(
+                    context = await browser.new_context(
                         user_agent=ua,
                         viewport={"width": 1280, "height": 800},
                         java_script_enabled=True,
@@ -415,20 +415,20 @@ def extract_rendered_text_with_playwright(
                         },
                     )
                     try:
-                        page = context.new_page()
-                        response = page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+                        page = await context.new_page()
+                        response = await page.goto(url, wait_until="networkidle", timeout=timeout_ms)
                         LOGGER.warning("page.goto success")
                         status = response.status if response else "unknown"
                         LOGGER.warning("[extraction] mode=PLAYWRIGHT status=%s ua_attempt=%s", status, attempt)
-                        page.wait_for_load_state("networkidle", timeout=timeout_ms)
+                        await page.wait_for_load_state("networkidle", timeout=timeout_ms)
                         LOGGER.warning("page load state reached")
-                        page.wait_for_selector("body", state="visible", timeout=timeout_ms)
-                        page.wait_for_function(
+                        await page.wait_for_selector("body", state="visible", timeout=timeout_ms)
+                        await page.wait_for_function(
                             "() => !!document?.body && (document.body.innerText || '').trim().length > 250",
                             timeout=timeout_ms,
                         )
-                        page.wait_for_timeout(3000)
-                        inner_text = page.evaluate("() => document?.body?.innerText || ''")
+                        await page.wait_for_timeout(3000)
+                        inner_text = await page.evaluate("document.body.innerText")
                         normalized = normalize_extracted_text(inner_text)
                         if normalized:
                             LOGGER.warning("PLAYWRIGHT SUCCESS")
@@ -447,9 +447,9 @@ def extract_rendered_text_with_playwright(
                         )
                         result["playwright_error"] = f"{error_type}: {exc}"
                     finally:
-                        context.close()
+                        await context.close()
             finally:
-                browser.close()
+                await browser.close()
     except Exception as exc:
         error_type = _classify_playwright_error(exc)
         LOGGER.warning(
@@ -461,6 +461,13 @@ def extract_rendered_text_with_playwright(
         return result
     LOGGER.warning("[extraction] mode=PLAYWRIGHT extracted_text_empty=true")
     return result
+
+
+async def _invoke_playwright_extractor(start_url: str) -> object:
+    maybe_result = extract_rendered_text_with_playwright(start_url)
+    if inspect.isawaitable(maybe_result):
+        return await maybe_result
+    return maybe_result
 
 
 def _coerce_playwright_result(playwright_result: object) -> Tuple[str, Optional[str]]:
@@ -1439,6 +1446,14 @@ def find_issues_on_page(page_url: str, text: str, hero_block: str = "", extracti
 
 
 def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], Dict[str, object]]:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(scan_site_async(start_url, max_pages=max_pages))
+    raise RuntimeError("scan_site() cannot be used inside an active event loop; use await scan_site_async(...).")
+
+
+async def scan_site_async(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], Dict[str, object]]:
     start_url = normalize_url(start_url)
     if not start_url:
         return 0, [], {}
@@ -1463,7 +1478,7 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], 
             LOGGER.warning("[extraction] fallback_triggered=true reason=static_non_200_status status=%s", status_code)
         else:
             LOGGER.warning("[extraction] fallback_triggered=true reason=static_fetch_failed")
-        playwright_result = extract_rendered_text_with_playwright(start_url)
+        playwright_result = await _invoke_playwright_extractor(start_url)
         rendered_text, playwright_error = _coerce_playwright_result(playwright_result)
         chromium_path = playwright_result.get("chromium_path") if isinstance(playwright_result, dict) else None
         if not rendered_text:
@@ -1527,7 +1542,7 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], 
         LOGGER.warning("[extraction] fallback_triggered=true reason=%s", ",".join(fallback_reason))
         extraction_mode = "PLAYWRIGHT_FALLBACK" if not main_text else "STATIC+PLAYWRIGHT"
         playwright_used = True
-        playwright_result = extract_rendered_text_with_playwright(start_url)
+        playwright_result = await _invoke_playwright_extractor(start_url)
         rendered_text, playwright_error = _coerce_playwright_result(playwright_result)
         chromium_path = playwright_result.get("chromium_path") if isinstance(playwright_result, dict) else None
         if rendered_text:
@@ -1658,7 +1673,7 @@ async def scan(request: Request, url: str = Form(...), max_pages: int = Form(10)
         max_pages_int = 10
     max_pages_int = max(1, min(50, max_pages_int))
 
-    pages_scanned, findings_obj, extraction_debug = scan_site(target, max_pages=max_pages_int)
+    pages_scanned, findings_obj, extraction_debug = await scan_site_async(target, max_pages=max_pages_int)
     risk = calc_risk_score(findings_obj)
 
     def to_template_finding(f: Finding) -> dict:
@@ -1727,7 +1742,7 @@ async def debug_scan_json(url: str, max_pages: int = 10):
     if not ADMIN_DEBUG_ENABLED:
         return {"enabled": False}
     target = normalize_url(url)
-    pages_scanned, findings_obj, extraction_debug = scan_site(target, max_pages=max_pages)
+    pages_scanned, findings_obj, extraction_debug = await scan_site_async(target, max_pages=max_pages)
     claim_debug = extraction_debug.get("claim_pipeline_debug", {}) if isinstance(extraction_debug, dict) else {}
     future_debug = extraction_debug.get("future_target_trace", {}) if isinstance(extraction_debug, dict) else {}
     return {
