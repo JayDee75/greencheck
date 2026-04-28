@@ -416,18 +416,22 @@ async def extract_rendered_text_with_playwright(
                     )
                     try:
                         page = await context.new_page()
-                        response = await page.goto(url, wait_until="networkidle", timeout=timeout_ms)
-                        LOGGER.warning("page.goto success")
-                        status = response.status if response else "unknown"
-                        LOGGER.warning("[extraction] mode=PLAYWRIGHT status=%s ua_attempt=%s", status, attempt)
-                        await page.wait_for_load_state("networkidle", timeout=timeout_ms)
-                        LOGGER.warning("page load state reached")
-                        await page.wait_for_selector("body", state="visible", timeout=timeout_ms)
-                        await page.wait_for_function(
-                            "() => !!document?.body && (document.body.innerText || '').trim().length > 250",
-                            timeout=timeout_ms,
-                        )
-                        await page.wait_for_timeout(3000)
+                        goto_error: Optional[Exception] = None
+                        try:
+                            response = await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                            LOGGER.warning("page.goto success")
+                            status = response.status if response else "unknown"
+                            LOGGER.warning("[extraction] mode=PLAYWRIGHT status=%s ua_attempt=%s", status, attempt)
+                        except Exception as exc:
+                            goto_error = exc
+                            error_type = _classify_playwright_error(exc)
+                            LOGGER.warning(
+                                "[extraction] mode=PLAYWRIGHT goto_timeout_or_failure ua_attempt=%s error_type=%s error=%s",
+                                attempt,
+                                error_type,
+                                exc,
+                            )
+                        await page.wait_for_timeout(5000)
                         inner_text = await page.evaluate("document.body.innerText")
                         normalized = normalize_extracted_text(inner_text)
                         if normalized:
@@ -435,10 +439,14 @@ async def extract_rendered_text_with_playwright(
                             LOGGER.warning("[extraction] extracted_text_length=%s", len(normalized))
                             LOGGER.warning("[extraction] extracted_text_preview_500=%s", normalized[:500])
                             result["text"] = normalized
+                            result["playwright_error"] = None
                             return result
+                        if goto_error is not None:
+                            error_type = _classify_playwright_error(goto_error)
+                            result["playwright_error"] = f"{error_type}: {goto_error}"
                     except Exception as exc:
                         error_type = _classify_playwright_error(exc)
-                        LOGGER.warning("page.goto failure")
+                        LOGGER.warning("page extraction failure")
                         LOGGER.warning(
                             "[extraction] mode=PLAYWRIGHT failed ua_attempt=%s error_type=%s error=%s",
                             attempt,
