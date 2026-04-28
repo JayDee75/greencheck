@@ -30,8 +30,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir -r /app/requirements.txt
-RUN pip install --no-cache-dir playwright
-RUN playwright install chromium
+RUN python -m playwright install chromium
 
 COPY . /app
 

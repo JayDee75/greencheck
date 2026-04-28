@@ -14,3 +14,15 @@ pip install -r requirements.txt
 python -m playwright install chromium
 uvicorn app.main:app --reload
 ```
+
+## Deployment build stap
+Gebruik tijdens build/deploy minimaal:
+```bash
+pip install -r requirements.txt
+python -m playwright install chromium
+```
+
+Als je host extra OS dependencies vereist:
+```bash
+python -m playwright install --with-deps chromium
+```
