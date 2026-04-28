@@ -7,6 +7,7 @@ from app.main import (
     RENDER_WARNING,
     RULEBOOK,
     _candidate_blocks,
+    _detect_chromium_executable,
     _extract_main_article_text,
     clean_snippet,
     find_issues_on_page,
@@ -557,3 +558,78 @@ def test_scan_site_triggers_rendered_fallback_when_static_text_is_short_and_keyw
     assert "short_static_text" in extraction_debug["rendered_fallback_reason"]
     assert extraction_debug["greenhouse_gas_in_text"] is True
     assert len([f for f in findings if f.category == "FUTURE_NET_ZERO_TARGETS"]) == 1
+
+
+def test_detect_chromium_executable_prefers_env_var(monkeypatch):
+    monkeypatch.setenv("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH", "/custom/chromium")
+    monkeypatch.setattr("app.main.shutil.which", lambda *_args, **_kwargs: None)
+    assert _detect_chromium_executable() == "/custom/chromium"
+
+
+def test_extract_rendered_text_uses_detected_system_chromium(monkeypatch):
+    launch_calls = []
+
+    class DummyPage:
+        def goto(self, *_args, **_kwargs):
+            class Response:
+                status = 200
+
+            return Response()
+
+        def wait_for_load_state(self, *_args, **_kwargs):
+            return None
+
+        def wait_for_selector(self, *_args, **_kwargs):
+            return None
+
+        def wait_for_function(self, *_args, **_kwargs):
+            return None
+
+        def wait_for_timeout(self, *_args, **_kwargs):
+            return None
+
+        def evaluate(self, *_args, **_kwargs):
+            return "Reduce greenhouse gas emissions by at least 55% by 2030."
+
+    class DummyContext:
+        def new_page(self):
+            return DummyPage()
+
+        def close(self):
+            return None
+
+    class DummyBrowser:
+        def new_context(self, **_kwargs):
+            return DummyContext()
+
+        def close(self):
+            return None
+
+    class DummyChromium:
+        def launch(self, **kwargs):
+            launch_calls.append(kwargs)
+            return DummyBrowser()
+
+    class DummyPlaywright:
+        chromium = DummyChromium()
+
+    class DummyManager:
+        def __enter__(self):
+            return DummyPlaywright()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr("playwright.sync_api.sync_playwright", lambda: DummyManager())
+    monkeypatch.setattr("app.main._detect_chromium_executable", lambda: "/usr/bin/chromium")
+    from app.main import extract_rendered_text_with_playwright
+
+    result = extract_rendered_text_with_playwright("https://example.com")
+
+    assert result["text"]
+    assert result["playwright_error"] is None
+    assert launch_calls
+    launch_kwargs = launch_calls[0]
+    assert launch_kwargs["executable_path"] == "/usr/bin/chromium"
+    assert "--no-sandbox" in launch_kwargs["args"]
+    assert "--disable-dev-shm-usage" in launch_kwargs["args"]

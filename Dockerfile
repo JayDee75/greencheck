@@ -9,6 +9,8 @@ RUN apt-get update && apt-get install -y \
     curl \
     gnupg \
     ca-certificates \
+    chromium \
+    chromium-driver \
     fonts-liberation \
     libnss3 \
     libatk1.0-0 \
@@ -30,7 +32,6 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir -r /app/requirements.txt
-RUN python -m playwright install chromium
 
 COPY . /app
 

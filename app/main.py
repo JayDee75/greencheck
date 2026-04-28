@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import string
 from dataclasses import dataclass
@@ -337,6 +338,17 @@ def _classify_playwright_error(exc: Exception) -> str:
     return "unknown"
 
 
+def _detect_chromium_executable() -> Optional[str]:
+    explicit_path = os.getenv("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH")
+    if explicit_path:
+        return explicit_path
+    for binary_name in ("chromium", "chromium-browser"):
+        detected = shutil.which(binary_name)
+        if detected:
+            return detected
+    return None
+
+
 def get_git_commit_hash() -> str:
     try:
         return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, timeout=2).strip()
@@ -373,9 +385,16 @@ def extract_rendered_text_with_playwright(
 
     try:
         with sync_playwright() as p:
+            chromium_executable = _detect_chromium_executable()
+            launch_kwargs: Dict[str, Any] = {
+                "headless": True,
+                "args": ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"],
+            }
+            if chromium_executable:
+                launch_kwargs["executable_path"] = chromium_executable
+                LOGGER.warning("[extraction] mode=PLAYWRIGHT using_system_chromium=%s", chromium_executable)
             browser = p.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+                **launch_kwargs,
             )
             LOGGER.warning("browser launched successfully")
             try:
