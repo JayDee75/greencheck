@@ -293,7 +293,7 @@ SUSTAINABILITY_FRAMING = re.compile(
 LOGGER = logging.getLogger(__name__)
 PIPELINE_DEBUG_ENABLED = os.getenv("GREENCHECK_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 ADMIN_DEBUG_ENABLED = os.getenv("GREENCHECK_ADMIN_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
-RENDER_WARNING = "Page could not be fully rendered due to access restrictions"
+RENDER_WARNING = "Page could not be rendered due to browser or access limitations"
 
 DEFAULT_BROWSER_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -483,7 +483,7 @@ def build_future_target_debug(text: str) -> Dict[str, object]:
         "extracted_text_length": len(text or ""),
         "extracted_text_preview": (text or "")[:3000],
         "contains_greenhouse_gas": "greenhouse gas" in (text or "").lower(),
-        "contains_55_percent": bool(re.search(r"55\\s*%", text or "", re.I)),
+        "contains_55_percent": bool(re.search(r"55\s*%", text or "", re.I)),
         "contains_2030": "2030" in (text or ""),
         "contains_reduce_greenhouse_gas_emissions": "reduce greenhouse gas emissions" in (text or "").lower(),
         "future_target_candidate_windows": windows,
@@ -1446,18 +1446,27 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], 
                 "chromium_path": chromium_path,
                 "extracted_text_length": 0,
                 "greenhouse_gas_in_text": False,
+                "contains_greenhouse_token": False,
+                "contains_emissions_token": False,
                 "contains_55_percent_token": False,
                 "contains_2030_token": False,
             }
         rendered_lower = rendered_text.lower()
+        contains_greenhouse = "greenhouse" in rendered_lower
+        contains_emissions = "emissions" in rendered_lower
+        contains_55 = ("55%" in rendered_lower or "55 %" in rendered_lower)
+        contains_2030 = "2030" in rendered_lower
         extraction_debug = {
             "rendered_fallback_used": True,
             "extraction_mode": extraction_mode,
             "rendered_text_length": len(rendered_text),
             "extracted_text_length": len(rendered_text),
             "greenhouse_gas_in_text": "greenhouse gas" in rendered_lower,
-            "contains_55_percent_token": ("55%" in rendered_lower or "55 %" in rendered_lower),
-            "contains_2030_token": "2030" in rendered_lower,
+            "contains_greenhouse_token": contains_greenhouse,
+            "contains_emissions_token": contains_emissions,
+            "contains_55_percent_token": contains_55,
+            "contains_2030_token": contains_2030,
+            "contains_target_claim": bool(contains_greenhouse and contains_emissions and contains_55 and contains_2030),
             "http_status": status_code,
             "playwright_used": playwright_used,
             "playwright_error": playwright_error,
@@ -1472,6 +1481,13 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], 
             extraction_debug["contains_55_percent_token"],
             extraction_debug["contains_2030_token"],
             extraction_debug["chromium_path"] or "not_found",
+        )
+        LOGGER.warning(
+            "[extraction] target_claim_tokens greenhouse=%s emissions=%s 55_percent=%s 2030=%s",
+            contains_greenhouse,
+            contains_emissions,
+            contains_55,
+            contains_2030,
         )
         extraction_debug["future_target_trace"] = build_future_target_debug(rendered_text)
         findings = find_issues_on_page(start_url, rendered_text, extraction_debug=extraction_debug)
@@ -1516,6 +1532,8 @@ def scan_site(start_url: str, max_pages: int = 10) -> Tuple[int, List[Finding], 
     contains_emissions = "emissions" in lower_text
     contains_55 = "55%" in lower_text or "55 %" in lower_text
     contains_2030 = "2030" in lower_text
+    extraction_debug["contains_greenhouse_token"] = contains_greenhouse
+    extraction_debug["contains_emissions_token"] = contains_emissions
     extraction_debug["contains_55_percent_token"] = contains_55
     extraction_debug["contains_2030_token"] = contains_2030
     extraction_debug["contains_target_claim"] = bool(contains_greenhouse and contains_emissions and contains_55 and contains_2030)
