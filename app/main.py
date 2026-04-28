@@ -388,17 +388,15 @@ def extract_rendered_text_with_playwright(
         with sync_playwright() as p:
             chromium_executable: Optional[str] = _detect_chromium_executable()
             result["chromium_path"] = chromium_executable
-            launch_kwargs: Dict[str, Any] = {
-                "headless": True,
-                "args": ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"],
-            }
-            if chromium_executable:
-                launch_kwargs["executable_path"] = chromium_executable
-                LOGGER.warning("[extraction] mode=PLAYWRIGHT using_system_chromium=%s", chromium_executable)
-            else:
+            if not chromium_executable:
                 LOGGER.warning("[extraction] mode=PLAYWRIGHT using_system_chromium=not_found")
+                result["playwright_error"] = "Chromium not installed in runtime"
+                return result
+            LOGGER.warning("[extraction] mode=PLAYWRIGHT using_system_chromium=%s", chromium_executable)
             browser = p.chromium.launch(
-                **launch_kwargs,
+                headless=True,
+                executable_path=chromium_executable,
+                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"],
             )
             LOGGER.warning("browser launched successfully")
             try:
