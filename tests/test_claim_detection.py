@@ -517,7 +517,10 @@ def test_normalize_extracted_text_collapses_whitespace_and_removes_duplicate_lin
 
 
 def test_scan_site_triggers_rendered_fallback_when_static_text_is_short_and_keyword_empty(monkeypatch):
-    monkeypatch.setattr("app.main.fetch_html", lambda *_args, **_kwargs: "<html><body><main><p>Hello</p></main></body></html>")
+    monkeypatch.setattr(
+        "app.main.fetch_html",
+        lambda *_args, **_kwargs: ("<html><body><main><p>Hello</p></main></body></html>", 200),
+    )
     monkeypatch.setattr(
         "app.main.extract_rendered_text_with_playwright",
         lambda *_args, **_kwargs: "Reduce greenhouse gas emissions by at least 55% by 2030.",
@@ -525,7 +528,7 @@ def test_scan_site_triggers_rendered_fallback_when_static_text_is_short_and_keyw
 
     _, findings, extraction_debug = scan_site("https://example.com/esg")
 
-    assert extraction_debug["extraction_mode"] == "RENDERED"
+    assert extraction_debug["extraction_mode"] == "PLAYWRIGHT"
     assert "short_static_text" in extraction_debug["rendered_fallback_reason"]
     assert extraction_debug["greenhouse_gas_in_text"] is True
     assert len([f for f in findings if f.category == "FUTURE_NET_ZERO_TARGETS"]) == 1
