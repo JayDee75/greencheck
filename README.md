@@ -11,7 +11,7 @@ EmpCo compliance checker met focus op **materiële** claims rond klimaat/emissie
 ## Starten
 ```bash
 pip install -r requirements.txt
-python -m playwright install chromium
+apt-get update && apt-get install -y chromium chromium-driver
 uvicorn app.main:app --reload
 ```
 
@@ -19,10 +19,10 @@ uvicorn app.main:app --reload
 Gebruik tijdens build/deploy minimaal:
 ```bash
 pip install -r requirements.txt
-python -m playwright install chromium
+apt-get update && apt-get install -y chromium chromium-driver
 ```
 
 Als je host extra OS dependencies vereist:
 ```bash
-python -m playwright install --with-deps chromium
+PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium uvicorn app.main:app --reload
 ```
