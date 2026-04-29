@@ -800,3 +800,31 @@ def test_extract_rendered_text_falls_back_to_inner_text_after_goto_timeout(monke
 
     assert "55% by 2030" in result["text"]
     assert result["playwright_error"] is None
+
+def test_poppies_page_regression_caps_generic_and_label_issues_per_page():
+    text = (
+        "Sustainability As a fast-growing company, we take sustainability seriously. "
+        "Our sustainability approach supports people, planet and product across our activities. "
+        "We have adopted our own Poppies Green Deal, setting ourselves short- and long-term goals. "
+        "The Poppies Green Deal guides our sustainability workstream and sustainability ambitions."
+    )
+
+    findings = find_issues_on_page("https://www.poppiesbakeries.com/en/sustainability", text)
+    categories = [f.category for f in findings]
+
+    assert len(findings) == 2
+    assert categories.count("GENERIC_ENVIRONMENTAL_CLAIMS") == 1
+    assert categories.count("SUSTAINABILITY_LABELS") == 1
+    assert all(f.severity == "medium" for f in findings)
+
+
+def test_poppies_regression_does_not_break_future_target_detection():
+    text = (
+        "We have adopted our own Poppies Green Deal and take sustainability seriously. "
+        "We will reduce greenhouse gas emissions by at least 55% by 2030."
+    )
+
+    findings = find_issues_on_page("https://www.poppiesbakeries.com/en/sustainability", text)
+    categories = [f.category for f in findings]
+
+    assert "FUTURE_NET_ZERO_TARGETS" in categories
